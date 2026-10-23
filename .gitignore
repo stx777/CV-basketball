@@ -1,0 +1,15 @@
+﻿*.pt
+*.onnx
+*.tflite
+
+venv/
+.venv/
+env/
+
+__pycache__/
+*.pyc
+
+input/
+output/
+
+.vscode/
