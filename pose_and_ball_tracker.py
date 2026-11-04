@@ -1,4 +1,6 @@
-﻿from collections import deque
+﻿import gc
+import json
+from collections import deque
 from pathlib import Path
 import cv2
 import numpy as np
@@ -43,6 +45,7 @@ SKELETON_GROUPS = [
 
 INPUT_VIDEO_PATH = "input/test8.mp4"
 OUTPUT_VIDEO_PATH = "output/result26.mp4"
+DATA_JSON_PATH = "output/ball_data.json"
 CONFIDENCE_THRESHOLD = 0.5
 
 
@@ -53,22 +56,27 @@ def detect_ball(clean_frame):
         classes=[0],       # только мяч
         conf=0.15,         # чувствительный порог для смазанного мяча
         imgsz=640,
-        verbose=False
+        verbose=False,
+        stream=True        # возвращает генератор
     )
 
-    boxes = results[0].boxes
-    if len(boxes) == 0:
-        return None
+    # Извлекаем результат из генератора через цикл
+    for r in results:
+        boxes = r.boxes
+        if len(boxes) == 0:
+            return None
 
-    # Берем лучший бокс по уверенности
-    best_box = max(boxes, key=lambda b: float(b.conf[0]))
-    conf = float(best_box.conf[0])
+        # Берем лучший бокс по уверенности
+        best_box = max(boxes, key=lambda b: float(b.conf[0]))
+        conf = float(best_box.conf[0])
 
-    x1, y1, x2, y2 = map(int, best_box.xyxy[0])
-    cx = int((x1 + x2) / 2)
-    cy = int((y1 + y2) / 2)
+        x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
 
-    return (cx, cy, conf, x1, y1, x2, y2)
+        return (cx, cy, conf, x1, y1, x2, y2)
+
+    return None
 
 
 def draw_ball_and_trajectory(frame, ball_data, width, height):
@@ -130,6 +138,9 @@ def main():
         print(f"Ошибка: положите входное видео в '{INPUT_VIDEO_PATH}'")
         return
 
+    # Создаем папку output, если ее нет
+    Path(OUTPUT_VIDEO_PATH).parent.mkdir(parents=True, exist_ok=True)
+
     cap = cv2.VideoCapture(str(input_file))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -139,7 +150,9 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(OUTPUT_VIDEO_PATH, fourcc, fps, (width, height))
 
+    y_history = []
     mp_pose = mp.solutions.pose
+
     with mp_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
@@ -169,15 +182,36 @@ def main():
 
             draw_ball_and_trajectory(frame, ball_data, width, height)
 
+            if ball_data is not None:
+                y_history.append(ball_data[1])
+            else:
+                y_history.append(None)  # None легально конвертируется в JSON (станет null)
+
             out.write(frame)
             frame_idx += 1
 
             if frame_idx % 30 == 0 or frame_idx == total_frames:
                 print(f"Обработано {frame_idx}/{total_frames} кадров...")
 
+            del clean_frame
+            del rgb_frame
+            del pose_results
+            del ball_data
+            gc.collect()
+
     cap.release()
     out.release()
-    print(f"\nГотово! Видео сохранено в: '{OUTPUT_VIDEO_PATH}'")
+    print(f"Видео сохранено в: '{OUTPUT_VIDEO_PATH}'")
+
+    # Экспорт данных в JSON-отчет
+    report = {
+        "fps": fps,
+        "total_frames": total_frames,
+        "y_history": y_history
+    }
+    with open(DATA_JSON_PATH, "w") as f:
+        json.dump(report, f)
+    print(f"Данные для метрик сохранены в: '{DATA_JSON_PATH}'")
 
 
 if __name__ == "__main__":
