@@ -86,7 +86,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         pauseButton.frame = CGRect(x: switchCameraButton.frame.minX - btnSize - spacing, y: topPadding, width: btnSize, height: btnSize)
         
         let labelWidth = pauseButton.frame.minX - 16 - 12
-        fpsLabel.frame = CGRect(x: 16, y: topPadding, width: min(labelWidth, 210), height: btnSize)
+        fpsLabel.frame = CGRect(x: 16, y: topPadding, width: min(labelWidth, 230), height: btnSize)
     }
 
     private func setupCamera() {
@@ -112,7 +112,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
     private func setupUI() {
         fpsLabel.textColor = .green
-        fpsLabel.font = .boldSystemFont(ofSize: 14)
+        fpsLabel.font = .boldSystemFont(ofSize: 13)
         fpsLabel.backgroundColor = UIColor.black.withAlphaComponent(0.65)
         fpsLabel.layer.cornerRadius = 10
         fpsLabel.clipsToBounds = true
@@ -177,8 +177,9 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
         if captureSession.canAddInput(newInput) { captureSession.addInput(newInput) }
 
+        // Отключаем аппаратное зеркалирование буфера: Vision сделает это сам через orientation .leftMirrored
         if let connection = videoOutput.connection(with: .video), connection.isVideoMirroringSupported {
-            connection.isVideoMirrored = (currentPosition == .front)
+            connection.isVideoMirrored = false
         }
 
         captureSession.commitConfiguration()
@@ -225,16 +226,15 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
         DispatchQueue.main.async {
             guard !self.isPaused else { return }
-            self.fpsLabel.text = String(format: "FPS: %.1f | %@", fps, self.modelStatus)
-            self.drawResults(pose: poseRequest, ballRequest: ballRequest)
+            let detectedJointsCount = self.drawResults(pose: poseRequest, ballRequest: ballRequest)
+            self.fpsLabel.text = String(format: "FPS: %.1f | Pose: %d | %@", fps, detectedJointsCount, self.modelStatus)
         }
     }
 
-    // Декодер как для NMS-моделей, так и для сырого тензора Ultralytics [1, 6, 8400]
     private func extractBestBallBox(from results: [Any]?, width: CGFloat, height: CGFloat) -> (CGRect, Float)? {
         guard let results = results else { return nil }
 
-        // 1. Если в модель встроен NMS
+        // 1. Модель со встроенным NMS
         if let observations = results as? [VNRecognizedObjectObservation] {
             let ballObs = observations.filter { obs in
                 guard let label = obs.labels.first?.identifier.lowercased() else { return true }
@@ -252,7 +252,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             }
         }
 
-        // 2. Если модель экспортирована как Unfiltered predictions (матрица [1, 6, 8400])
+        // 2. Модель с сырым тензором [1, 6, 8400]
         if let featureObs = results as? [VNCoreMLFeatureValueObservation],
            let multiArray = featureObs.first?.featureValue.multiArrayValue {
             
@@ -266,7 +266,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             let cStride = strides[1]
             let aStride = strides[2]
 
-            var bestConf: Float = 0.20 // Порог уверенности для мяча (класс 0 находится в индексе 4)
+            var bestConf: Float = 0.20
             var bestAnchor = -1
 
             if multiArray.dataType == .float16 {
@@ -286,12 +286,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                     if cx > 2.0 || cy > 2.0 || w > 2.0 {
                         cx /= 640.0; cy /= 640.0; w /= 640.0; h /= 640.0
                     }
-                    let rect = CGRect(
-                        x: (cx - w / 2) * width,
-                        y: (cy - h / 2) * height,
-                        width: w * width,
-                        height: h * height
-                    )
+                    let rect = CGRect(x: (cx - w / 2) * width, y: (cy - h / 2) * height, width: w * width, height: h * height)
                     return (rect, bestConf)
                 }
             } else if multiArray.dataType == .float32 {
@@ -311,12 +306,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                     if cx > 2.0 || cy > 2.0 || w > 2.0 {
                         cx /= 640.0; cy /= 640.0; w /= 640.0; h /= 640.0
                     }
-                    let rect = CGRect(
-                        x: (cx - w / 2) * width,
-                        y: (cy - h / 2) * height,
-                        width: w * width,
-                        height: h * height
-                    )
+                    let rect = CGRect(x: (cx - w / 2) * width, y: (cy - h / 2) * height, width: w * width, height: h * height)
                     return (rect, bestConf)
                 }
             }
@@ -324,27 +314,32 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         return nil
     }
 
-    private func drawResults(pose: VNDetectHumanBodyPoseRequest, ballRequest: VNCoreMLRequest?) {
+    @discardableResult
+    private func drawResults(pose: VNDetectHumanBodyPoseRequest, ballRequest: VNCoreMLRequest?) -> Int {
         drawingLayer.sublayers?.removeAll()
         let width = view.bounds.width
         let height = view.bounds.height
+        var totalPoints = 0
 
         // 1. Отрисовка скелета
         if let results = pose.results?.first {
             var pointsDict: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
 
+            // Берем точки с порогом уверенности 0.15 (вместо завышенного 0.3)
             for group in skeletonGroups {
                 for pair in group.pairs {
                     for joint in [pair.0, pair.1] {
                         if pointsDict[joint] == nil,
-                           let point = try? results.recognizedPoint(joint), point.confidence > 0.3 {
+                           let point = try? results.recognizedPoint(joint), point.confidence > 0.15 {
                             let screenPoint = CGPoint(x: point.location.x * width, y: (1 - point.location.y) * height)
                             pointsDict[joint] = screenPoint
                         }
                     }
                 }
             }
+            totalPoints = pointsDict.count
 
+            // Отрисовываем линии костей (ВАЖНО: fillColor = clear!)
             for group in skeletonGroups {
                 let groupPath = UIBezierPath()
                 for (j1, j2) in group.pairs {
@@ -358,13 +353,15 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                 lineLayer.strokeColor = group.color.cgColor
                 lineLayer.lineWidth = 4
                 lineLayer.lineCap = .round
+                lineLayer.fillColor = UIColor.clear.cgColor // <-- Убираем чёрную заливку!
                 drawingLayer.addSublayer(lineLayer)
             }
 
+            // Отрисовываем аккуратные белые кружки суставов
             let jointsPath = UIBezierPath()
             for (_, p) in pointsDict {
-                jointsPath.move(to: p)
-                jointsPath.addArc(withCenter: p, radius: 4, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                let circle = UIBezierPath(ovalIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8))
+                jointsPath.append(circle)
             }
             let jointsLayer = CAShapeLayer()
             jointsLayer.path = jointsPath.cgPath
@@ -372,7 +369,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             drawingLayer.addSublayer(jointsLayer)
         }
 
-        // 2. Отрисовка мяча (синий квадрат + подпись уверенности)
+        // 2. Отрисовка мяча
         if let (screenRect, conf) = extractBestBallBox(from: ballRequest?.results, width: width, height: height) {
             let boxLayer = CAShapeLayer()
             boxLayer.path = UIBezierPath(rect: screenRect).cgPath
@@ -394,5 +391,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             textLayer.contentsScale = UIScreen.main.scale
             drawingLayer.addSublayer(textLayer)
         }
+
+        return totalPoints
     }
 }
