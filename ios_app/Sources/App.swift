@@ -82,15 +82,11 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         let topPadding: CGFloat = 55
         let spacing: CGFloat = 12
         
-        // Кнопка поворота камеры (крайняя справа)
         switchCameraButton.frame = CGRect(x: view.bounds.width - btnSize - 16, y: topPadding, width: btnSize, height: btnSize)
-        
-        // Кнопка паузы (слева от кнопки поворота)
         pauseButton.frame = CGRect(x: switchCameraButton.frame.minX - btnSize - spacing, y: topPadding, width: btnSize, height: btnSize)
         
-        // Плашка FPS (занимает оставшееся место слева)
         let labelWidth = pauseButton.frame.minX - 16 - 12
-        fpsLabel.frame = CGRect(x: 16, y: topPadding, width: min(labelWidth, 190), height: btnSize)
+        fpsLabel.frame = CGRect(x: 16, y: topPadding, width: min(labelWidth, 210), height: btnSize)
     }
 
     private func setupCamera() {
@@ -115,7 +111,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     }
 
     private func setupUI() {
-        // Метка FPS
         fpsLabel.textColor = .green
         fpsLabel.font = .boldSystemFont(ofSize: 14)
         fpsLabel.backgroundColor = UIColor.black.withAlphaComponent(0.65)
@@ -124,7 +119,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         fpsLabel.textAlignment = .center
         view.addSubview(fpsLabel)
 
-        // Кнопка Паузы
         pauseButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
         pauseButton.tintColor = .white
         pauseButton.backgroundColor = UIColor.black.withAlphaComponent(0.65)
@@ -133,7 +127,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         pauseButton.addTarget(self, action: #selector(togglePause), for: .touchUpInside)
         view.addSubview(pauseButton)
 
-        // Кнопка смены камеры
         switchCameraButton.setImage(UIImage(systemName: "camera.rotate.fill"), for: .normal)
         switchCameraButton.tintColor = .white
         switchCameraButton.backgroundColor = UIColor.black.withAlphaComponent(0.65)
@@ -158,7 +151,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             fpsLabel.text = String(format: "PAUSED | %@", modelStatus)
             fpsLabel.textColor = .systemYellow
         } else {
-            lastTime = CFAbsoluteTimeGetCurrent() // Сброс таймера, чтобы не было скачка FPS
+            lastTime = CFAbsoluteTimeGetCurrent()
             fpsLabel.textColor = .green
             DispatchQueue.global(qos: .userInitiated).async {
                 self.captureSession.startRunning()
@@ -184,16 +177,22 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
         if captureSession.canAddInput(newInput) { captureSession.addInput(newInput) }
 
+        if let connection = videoOutput.connection(with: .video), connection.isVideoMirroringSupported {
+            connection.isVideoMirrored = (currentPosition == .front)
+        }
+
         captureSession.commitConfiguration()
     }
 
     private func setupModel() {
-        if let model = try? basketball_best(configuration: MLModelConfiguration()).model {
-            self.coreMLModel = try? VNCoreMLModel(for: model)
+        if let model = try? basketball_best(configuration: MLModelConfiguration()).model,
+           let vnModel = try? VNCoreMLModel(for: model) {
+            self.coreMLModel = vnModel
             self.modelStatus = "Ball: OK"
         } else if let modelURL = Bundle.main.url(forResource: "basketball_best", withExtension: "mlmodelc"),
-                  let mlModel = try? MLModel(contentsOf: modelURL) {
-            self.coreMLModel = try? VNCoreMLModel(for: mlModel)
+                  let mlModel = try? MLModel(contentsOf: modelURL),
+                  let vnModel = try? VNCoreMLModel(for: mlModel) {
+            self.coreMLModel = vnModel
             self.modelStatus = "Ball: OK"
         } else {
             self.modelStatus = "Ball: ERR"
@@ -201,7 +200,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Если стоит пауза — игнорируем входящие кадры
         guard !isPaused, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         let currentTime = CFAbsoluteTimeGetCurrent()
@@ -230,6 +228,100 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             self.fpsLabel.text = String(format: "FPS: %.1f | %@", fps, self.modelStatus)
             self.drawResults(pose: poseRequest, ballRequest: ballRequest)
         }
+    }
+
+    // Декодер как для NMS-моделей, так и для сырого тензора Ultralytics [1, 6, 8400]
+    private func extractBestBallBox(from results: [Any]?, width: CGFloat, height: CGFloat) -> (CGRect, Float)? {
+        guard let results = results else { return nil }
+
+        // 1. Если в модель встроен NMS
+        if let observations = results as? [VNRecognizedObjectObservation] {
+            let ballObs = observations.filter { obs in
+                guard let label = obs.labels.first?.identifier.lowercased() else { return true }
+                return label.contains("ball") || label == "0"
+            }
+            if let best = ballObs.max(by: { $0.confidence < $1.confidence }), best.confidence > 0.20 {
+                let box = best.boundingBox
+                let rect = CGRect(
+                    x: box.origin.x * width,
+                    y: (1 - box.origin.y - box.height) * height,
+                    width: box.width * width,
+                    height: box.height * height
+                )
+                return (rect, best.confidence)
+            }
+        }
+
+        // 2. Если модель экспортирована как Unfiltered predictions (матрица [1, 6, 8400])
+        if let featureObs = results as? [VNCoreMLFeatureValueObservation],
+           let multiArray = featureObs.first?.featureValue.multiArrayValue {
+            
+            let shape = multiArray.shape.map { $0.intValue }
+            guard shape.count == 3 else { return nil }
+            let channels = shape[1]
+            let anchors = shape[2]
+            guard channels >= 5, anchors > 0 else { return nil }
+
+            let strides = multiArray.strides.map { $0.intValue }
+            let cStride = strides[1]
+            let aStride = strides[2]
+
+            var bestConf: Float = 0.20 // Порог уверенности для мяча (класс 0 находится в индексе 4)
+            var bestAnchor = -1
+
+            if multiArray.dataType == .float16 {
+                let ptr = multiArray.dataPointer.bindMemory(to: Float16.self, capacity: multiArray.count)
+                for a in 0..<anchors {
+                    let conf = Float(ptr[4 * cStride + a * aStride])
+                    if conf > bestConf {
+                        bestConf = conf
+                        bestAnchor = a
+                    }
+                }
+                if bestAnchor >= 0 {
+                    var cx = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
+                    var cy = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
+                    var w  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
+                    var h  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
+                    if cx > 2.0 || cy > 2.0 || w > 2.0 {
+                        cx /= 640.0; cy /= 640.0; w /= 640.0; h /= 640.0
+                    }
+                    let rect = CGRect(
+                        x: (cx - w / 2) * width,
+                        y: (cy - h / 2) * height,
+                        width: w * width,
+                        height: h * height
+                    )
+                    return (rect, bestConf)
+                }
+            } else if multiArray.dataType == .float32 {
+                let ptr = multiArray.dataPointer.bindMemory(to: Float32.self, capacity: multiArray.count)
+                for a in 0..<anchors {
+                    let conf = ptr[4 * cStride + a * aStride]
+                    if conf > bestConf {
+                        bestConf = conf
+                        bestAnchor = a
+                    }
+                }
+                if bestAnchor >= 0 {
+                    var cx = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
+                    var cy = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
+                    var w  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
+                    var h  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
+                    if cx > 2.0 || cy > 2.0 || w > 2.0 {
+                        cx /= 640.0; cy /= 640.0; w /= 640.0; h /= 640.0
+                    }
+                    let rect = CGRect(
+                        x: (cx - w / 2) * width,
+                        y: (cy - h / 2) * height,
+                        width: w * width,
+                        height: h * height
+                    )
+                    return (rect, bestConf)
+                }
+            }
+        }
+        return nil
     }
 
     private func drawResults(pose: VNDetectHumanBodyPoseRequest, ballRequest: VNCoreMLRequest?) {
@@ -280,24 +372,27 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             drawingLayer.addSublayer(jointsLayer)
         }
 
-        // 2. Отрисовка мяча
-        if let observations = ballRequest?.results as? [VNRecognizedObjectObservation] {
-            for observation in observations where observation.confidence > 0.25 {
-                let box = observation.boundingBox
-                let screenRect = CGRect(
-                    x: box.origin.x * width,
-                    y: (1 - box.origin.y - box.height) * height,
-                    width: box.width * width,
-                    height: box.height * height
-                )
+        // 2. Отрисовка мяча (синий квадрат + подпись уверенности)
+        if let (screenRect, conf) = extractBestBallBox(from: ballRequest?.results, width: width, height: height) {
+            let boxLayer = CAShapeLayer()
+            boxLayer.path = UIBezierPath(rect: screenRect).cgPath
+            boxLayer.strokeColor = UIColor.blue.cgColor
+            boxLayer.lineWidth = 4
+            boxLayer.fillColor = UIColor.clear.cgColor
+            drawingLayer.addSublayer(boxLayer)
 
-                let boxLayer = CAShapeLayer()
-                boxLayer.path = UIBezierPath(rect: screenRect).cgPath
-                boxLayer.strokeColor = UIColor.blue.cgColor
-                boxLayer.lineWidth = 4
-                boxLayer.fillColor = UIColor.clear.cgColor
-                drawingLayer.addSublayer(boxLayer)
-            }
+            let textLayer = CATextLayer()
+            textLayer.string = String(format: "Ball %.2f", conf)
+            textLayer.font = UIFont.boldSystemFont(ofSize: 14)
+            textLayer.fontSize = 14
+            textLayer.foregroundColor = UIColor.white.cgColor
+            textLayer.backgroundColor = UIColor.blue.cgColor
+            textLayer.alignmentMode = .center
+            textLayer.cornerRadius = 4
+            textLayer.masksToBounds = true
+            textLayer.frame = CGRect(x: screenRect.minX, y: max(0, screenRect.minY - 24), width: 85, height: 20)
+            textLayer.contentsScale = UIScreen.main.scale
+            drawingLayer.addSublayer(textLayer)
         }
     }
 }
