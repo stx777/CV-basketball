@@ -1,4 +1,7 @@
-﻿import gc
+﻿import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import gc
 import json
 from collections import deque
 from pathlib import Path
@@ -9,7 +12,6 @@ from ultralytics import YOLO
 
 ball_model = YOLO("basketball_best.pt")
 
-
 # Хранилище последних N позиций мяча для отрисовки траектории
 TRAJECTORY_LENGTH = 7
 ball_track_points = deque(maxlen=TRAJECTORY_LENGTH)
@@ -18,71 +20,67 @@ ball_track_points = deque(maxlen=TRAJECTORY_LENGTH)
 SKELETON_GROUPS = [
     {
         "name": "Торс",
-        "color": (0, 255, 0),       # Зеленый
+        "color": (0, 255, 0),  # Зеленый
         "pairs": [(11, 12), (11, 23), (12, 24), (23, 24)]
     },
     {
         "name": "Левая рука",
-        "color": (0, 0, 255),       # Красный
+        "color": (0, 0, 255),  # Красный
         "pairs": [(11, 13), (13, 15)]
     },
     {
         "name": "Правая рука",
-        "color": (255, 0, 0),       # Синий
+        "color": (255, 0, 0),  # Синий
         "pairs": [(12, 14), (14, 16)]
     },
     {
         "name": "Левая нога",
-        "color": (0, 255, 255),     # Желтый
+        "color": (0, 255, 255),  # Желтый
         "pairs": [(23, 25), (25, 27)]
     },
     {
         "name": "Правая нога",
-        "color": (255, 255, 0),     # Циан
+        "color": (255, 255, 0),  # Циан
         "pairs": [(24, 26), (26, 28)]
     }
 ]
 
-INPUT_VIDEO_PATH = "input/test8.mp4"
-OUTPUT_VIDEO_PATH = "output/result26.mp4"
+INPUT_VIDEO_PATH = "input/test3.mp4"
+OUTPUT_VIDEO_PATH = "output/result3.mp4"
 DATA_JSON_PATH = "output/ball_data.json"
 CONFIDENCE_THRESHOLD = 0.5
 
 
 def detect_ball(clean_frame):
-    """Чистый инференс YOLO без вмешательства ByteTrack."""
+    """Классический инференс YOLO для покадровой обработки."""
     results = ball_model.predict(
         source=clean_frame,
         classes=[0],       # только мяч
-        conf=0.15,         # чувствительный порог для смазанного мяча
+        conf=0.15,         # чувствительный порог
         imgsz=640,
-        verbose=False,
-        stream=True        # возвращает генератор
+        verbose=False
     )
 
-    # Извлекаем результат из генератора через цикл
-    for r in results:
-        boxes = r.boxes
-        if len(boxes) == 0:
-            return None
+    boxes = results[0].boxes
+    if len(boxes) == 0:
+        return None
 
-        # Берем лучший бокс по уверенности
-        best_box = max(boxes, key=lambda b: float(b.conf[0]))
-        conf = float(best_box.conf[0])
+    # Берем лучший бокс по уверенности
+    best_box = max(boxes, key=lambda b: float(b.conf[0]))
+    conf = float(best_box.conf[0])
 
-        x1, y1, x2, y2 = map(int, best_box.xyxy[0])
-        cx = int((x1 + x2) / 2)
-        cy = int((y1 + y2) / 2)
+    x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+    cx = int((x1 + x2) / 2)
+    cy = int((y1 + y2) / 2)
+    width_px = x2 - x1  # ширина мяча для масштаба
 
-        return (cx, cy, conf, x1, y1, x2, y2)
-
-    return None
+    return (cx, cy, width_px, conf, x1, y1, x2, y2)
 
 
 def draw_ball_and_trajectory(frame, ball_data, width, height):
     """Аккуратный исчезающий хвост кометы без паутины."""
     if ball_data is not None:
-        cx, cy, conf, x1, y1, x2, y2 = ball_data
+        cx, cy, width_px, conf, x1, y1, x2, y2 = ball_data
 
         # 1. Рисуем синий квадрат и скор
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), thickness=3)
@@ -113,7 +111,6 @@ def draw_ball_and_trajectory(frame, ball_data, width, height):
 
 
 def draw_skeleton(frame, landmarks, width, height):
-
     for group in SKELETON_GROUPS:
         color = group["color"]
         for idx_start, idx_end in group["pairs"]:
@@ -150,15 +147,18 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(OUTPUT_VIDEO_PATH, fourcc, fps, (width, height))
 
-    y_history = []
+    # массивы для сбора метрик
+    y_history, x_history, w_history = [], [], []
+    left_wrist_history, right_wrist_history, shoulders_history = [], [], []
+
     mp_pose = mp.solutions.pose
 
     with mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=1,
-        smooth_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+            static_image_mode=False,
+            model_complexity=1,
+            smooth_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
     ) as pose:
 
         frame_idx = 0
@@ -182,10 +182,35 @@ def main():
 
             draw_ball_and_trajectory(frame, ball_data, width, height)
 
+            # ДОБАВЛЕНО: Сбор данных о мяче
             if ball_data is not None:
+                x_history.append(ball_data[0])
                 y_history.append(ball_data[1])
+                w_history.append(ball_data[2])
             else:
+                x_history.append(None)
                 y_history.append(None)  # None легально конвертируется в JSON (станет null)
+                w_history.append(None)
+
+            # Сбор данных о запястьях и плечах для фильтрации бросков
+            if pose_results.pose_landmarks:
+                lms = pose_results.pose_landmarks.landmark
+                lw, rw = lms[15], lms[16]
+                ls, rs = lms[11], lms[12]
+
+                left_wrist_history.append(
+                    (int(lw.x * width), int(lw.y * height)) if lw.visibility > CONFIDENCE_THRESHOLD else None)
+                right_wrist_history.append(
+                    (int(rw.x * width), int(rw.y * height)) if rw.visibility > CONFIDENCE_THRESHOLD else None)
+
+                if ls.visibility > CONFIDENCE_THRESHOLD and rs.visibility > CONFIDENCE_THRESHOLD:
+                    shoulders_history.append(int((ls.y + rs.y) / 2 * height))
+                else:
+                    shoulders_history.append(None)
+            else:
+                left_wrist_history.append(None)
+                right_wrist_history.append(None)
+                shoulders_history.append(None)
 
             out.write(frame)
             frame_idx += 1
@@ -203,11 +228,16 @@ def main():
     out.release()
     print(f"Видео сохранено в: '{OUTPUT_VIDEO_PATH}'")
 
-    # Экспорт данных в JSON-отчет
+    # Экспорт расширенных данных в JSON-отчет
     report = {
         "fps": fps,
         "total_frames": total_frames,
-        "y_history": y_history
+        "y_history": y_history,
+        "x_history": x_history,
+        "w_history": w_history,
+        "left_wrist": left_wrist_history,
+        "right_wrist": right_wrist_history,
+        "shoulders": shoulders_history
     }
     with open(DATA_JSON_PATH, "w") as f:
         json.dump(report, f)
