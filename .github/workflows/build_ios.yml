@@ -1,0 +1,38 @@
+﻿name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Project and Build
+        run: |
+          cd ios_app
+          xcodegen generate
+          xcodebuild -project BasketballApp.xcodeproj \
+            -scheme BasketballApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/BasketballApp.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO
+
+          mkdir -p Payload
+          cp -r build/BasketballApp.xcarchive/Products/Applications/BasketballApp.app Payload/
+          zip -r BasketballApp.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BasketballApp-IPA
+          path: ios_app/BasketballApp.ipa

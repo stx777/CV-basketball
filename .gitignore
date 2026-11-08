@@ -11,5 +11,6 @@ __pycache__/
 
 input/
 output/
-
+dataset/
 .vscode/
+*.yaml

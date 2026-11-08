@@ -1,0 +1,16 @@
+﻿name: BasketballApp
+options:
+  bundleIdPrefix: com.cv.basketball
+targets:
+  BasketballApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - Sources
+      - basketball_best.mlpackage
+    info:
+      path: Info.plist
+      properties:
+        NSCameraUsageDescription: "Нужен доступ к камере для трекинга мяча и позы"
+        UILaunchScreen: {}
