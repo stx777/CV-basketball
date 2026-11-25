@@ -27,12 +27,16 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     private let captureSession = AVCaptureSession()
     private var previewLayer: AVCaptureVideoPreviewLayer!
     private let drawingLayer = CAShapeLayer()
-    
+
     // UI Элементы
     private let fpsLabel = UILabel()
     private let switchCameraButton = UIButton(type: .system)
     private let pauseButton = UIButton(type: .system)
-    
+    private let resetButton = UIButton(type: .system)
+    private let metricsContainer = UIView()
+    private let metricsPrimaryLabel = UILabel()
+    private let metricsSecondaryLabel = UILabel()
+
     // Состояние
     private var isPaused: Bool = false
     private var currentPosition: AVCaptureDevice.Position = .back
@@ -40,6 +44,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     private var lastTime = CFAbsoluteTimeGetCurrent()
     private var coreMLModel: VNCoreMLModel?
     private var modelStatus: String = "NO MODEL"
+    private let metricsCalculator = MetricsCalculator()
 
     private let skeletonGroups: [SkeletonGroup] = [
         SkeletonGroup(color: .green, pairs: [
@@ -77,16 +82,28 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
         drawingLayer.frame = view.bounds
-        
+
         let btnSize: CGFloat = 44
-        let topPadding: CGFloat = 55
-        let spacing: CGFloat = 12
-        
+        let topPadding: CGFloat = max(55, view.safeAreaInsets.top + 8)
+        let spacing: CGFloat = 10
+
         switchCameraButton.frame = CGRect(x: view.bounds.width - btnSize - 16, y: topPadding, width: btnSize, height: btnSize)
         pauseButton.frame = CGRect(x: switchCameraButton.frame.minX - btnSize - spacing, y: topPadding, width: btnSize, height: btnSize)
-        
-        let labelWidth = pauseButton.frame.minX - 16 - 12
-        fpsLabel.frame = CGRect(x: 16, y: topPadding, width: min(labelWidth, 230), height: btnSize)
+        resetButton.frame = CGRect(x: pauseButton.frame.minX - btnSize - spacing, y: topPadding, width: btnSize, height: btnSize)
+
+        let labelWidth = resetButton.frame.minX - 16 - 10
+        fpsLabel.frame = CGRect(x: 16, y: topPadding, width: max(120, labelWidth), height: btnSize)
+
+        let bottomPadding = max(24, view.safeAreaInsets.bottom + 12)
+        let panelHeight: CGFloat = 76
+        metricsContainer.frame = CGRect(
+            x: 16,
+            y: view.bounds.height - bottomPadding - panelHeight,
+            width: view.bounds.width - 32,
+            height: panelHeight
+        )
+        metricsPrimaryLabel.frame = CGRect(x: 12, y: 10, width: metricsContainer.bounds.width - 24, height: 26)
+        metricsSecondaryLabel.frame = CGRect(x: 12, y: 40, width: metricsContainer.bounds.width - 24, height: 24)
     }
 
     private func setupCamera() {
@@ -112,12 +129,21 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
     private func setupUI() {
         fpsLabel.textColor = .green
-        fpsLabel.font = .boldSystemFont(ofSize: 13)
+        fpsLabel.font = .boldSystemFont(ofSize: 12)
         fpsLabel.backgroundColor = UIColor.black.withAlphaComponent(0.65)
         fpsLabel.layer.cornerRadius = 10
         fpsLabel.clipsToBounds = true
         fpsLabel.textAlignment = .center
+        fpsLabel.adjustsFontSizeToFitWidth = true
         view.addSubview(fpsLabel)
+
+        resetButton.setImage(UIImage(systemName: "arrow.counterclockwise"), for: .normal)
+        resetButton.tintColor = .white
+        resetButton.backgroundColor = UIColor.black.withAlphaComponent(0.65)
+        resetButton.layer.cornerRadius = 22
+        resetButton.clipsToBounds = true
+        resetButton.addTarget(self, action: #selector(resetMetrics), for: .touchUpInside)
+        view.addSubview(resetButton)
 
         pauseButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
         pauseButton.tintColor = .white
@@ -134,11 +160,34 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         switchCameraButton.clipsToBounds = true
         switchCameraButton.addTarget(self, action: #selector(toggleCamera), for: .touchUpInside)
         view.addSubview(switchCameraButton)
+
+        metricsContainer.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+        metricsContainer.layer.cornerRadius = 14
+        metricsContainer.clipsToBounds = true
+        view.addSubview(metricsContainer)
+
+        metricsPrimaryLabel.textColor = .white
+        metricsPrimaryLabel.font = .boldSystemFont(ofSize: 15)
+        metricsPrimaryLabel.textAlignment = .center
+        metricsPrimaryLabel.text = "Удары: 0   |   Броски: 0   |   Потери: 0"
+        metricsContainer.addSubview(metricsPrimaryLabel)
+
+        metricsSecondaryLabel.textColor = .systemGreen
+        metricsSecondaryLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        metricsSecondaryLabel.textAlignment = .center
+        metricsSecondaryLabel.text = "Темп: 0.00 уд/с   |   Высота: 0.0 см"
+        metricsContainer.addSubview(metricsSecondaryLabel)
+    }
+
+    @objc private func resetMetrics() {
+        metricsCalculator.reset()
+        metricsPrimaryLabel.text = "Удары: 0   |   Броски: 0   |   Потери: 0"
+        metricsSecondaryLabel.text = "Темп: 0.00 уд/с   |   Высота: 0.0 см"
     }
 
     @objc private func togglePause() {
         isPaused.toggle()
-        
+
         let config = UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)
         let iconName = isPaused ? "play.fill" : "pause.fill"
         pauseButton.setImage(UIImage(systemName: iconName, withConfiguration: config), for: .normal)
@@ -177,7 +226,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
         if captureSession.canAddInput(newInput) { captureSession.addInput(newInput) }
 
-        // Отключаем аппаратное зеркалирование буфера: Vision сделает это сам через orientation .leftMirrored
         if let connection = videoOutput.connection(with: .video), connection.isVideoMirroringSupported {
             connection.isVideoMirrored = false
         }
@@ -226,9 +274,56 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
         DispatchQueue.main.async {
             guard !self.isPaused else { return }
-            let detectedJointsCount = self.drawResults(pose: poseRequest, ballRequest: ballRequest)
-            self.fpsLabel.text = String(format: "FPS: %.1f | Pose: %d | %@", fps, detectedJointsCount, self.modelStatus)
+            let width = self.view.bounds.width
+            let height = self.view.bounds.height
+
+            let pointsDict = self.extractPosePoints(from: poseRequest, width: width, height: height)
+            let ballResult = self.extractBestBallBox(from: ballRequest?.results, width: width, height: height)
+
+            self.drawResults(pointsDict: pointsDict, ballResult: ballResult)
+
+            let metrics = self.metricsCalculator.update(
+                ballRect: ballResult?.0,
+                leftWrist: pointsDict[.leftWrist],
+                rightWrist: pointsDict[.rightWrist],
+                leftShoulder: pointsDict[.leftShoulder],
+                rightShoulder: pointsDict[.rightShoulder],
+                timestamp: currentTime,
+                viewWidth: width,
+                viewHeight: height
+            )
+
+            self.fpsLabel.text = String(format: "FPS: %.1f | Pose: %d | %@", fps, pointsDict.count, self.modelStatus)
+            self.metricsPrimaryLabel.text = String(
+                format: "Удары: %d   |   Броски: %d   |   Потери: %d",
+                metrics.realBounces, metrics.shots, metrics.falseBounces
+            )
+            self.metricsSecondaryLabel.text = String(
+                format: "Темп: %.2f уд/с   |   Высота: %.1f см",
+                metrics.tempo, metrics.avgBounceHeightCm
+            )
         }
+    }
+
+    private func extractPosePoints(
+        from pose: VNDetectHumanBodyPoseRequest,
+        width: CGFloat,
+        height: CGFloat
+    ) -> [VNHumanBodyPoseObservation.JointName: CGPoint] {
+        var pointsDict: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
+        guard let results = pose.results?.first else { return pointsDict }
+
+        for group in skeletonGroups {
+            for pair in group.pairs {
+                for joint in [pair.0, pair.1] {
+                    if pointsDict[joint] == nil,
+                       let point = try? results.recognizedPoint(joint), point.confidence > 0.15 {
+                        pointsDict[joint] = CGPoint(x: point.location.x * width, y: (1 - point.location.y) * height)
+                    }
+                }
+            }
+        }
+        return pointsDict
     }
 
     private func extractBestBallBox(from results: [Any]?, width: CGFloat, height: CGFloat) -> (CGRect, Float)? {
@@ -255,7 +350,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         // 2. Модель с сырым тензором [1, 6, 8400]
         if let featureObs = results as? [VNCoreMLFeatureValueObservation],
            let multiArray = featureObs.first?.featureValue.multiArrayValue {
-            
+
             let shape = multiArray.shape.map { $0.intValue }
             guard shape.count == 3 else { return nil }
             let channels = shape[1]
@@ -314,32 +409,14 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         return nil
     }
 
-    @discardableResult
-    private func drawResults(pose: VNDetectHumanBodyPoseRequest, ballRequest: VNCoreMLRequest?) -> Int {
+    private func drawResults(
+        pointsDict: [VNHumanBodyPoseObservation.JointName: CGPoint],
+        ballResult: (CGRect, Float)?
+    ) {
         drawingLayer.sublayers?.removeAll()
-        let width = view.bounds.width
-        let height = view.bounds.height
-        var totalPoints = 0
 
         // 1. Отрисовка скелета
-        if let results = pose.results?.first {
-            var pointsDict: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
-
-            // Берем точки с порогом уверенности 0.15 (вместо завышенного 0.3)
-            for group in skeletonGroups {
-                for pair in group.pairs {
-                    for joint in [pair.0, pair.1] {
-                        if pointsDict[joint] == nil,
-                           let point = try? results.recognizedPoint(joint), point.confidence > 0.15 {
-                            let screenPoint = CGPoint(x: point.location.x * width, y: (1 - point.location.y) * height)
-                            pointsDict[joint] = screenPoint
-                        }
-                    }
-                }
-            }
-            totalPoints = pointsDict.count
-
-            // Отрисовываем линии костей (ВАЖНО: fillColor = clear!)
+        if !pointsDict.isEmpty {
             for group in skeletonGroups {
                 let groupPath = UIBezierPath()
                 for (j1, j2) in group.pairs {
@@ -353,11 +430,9 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                 lineLayer.strokeColor = group.color.cgColor
                 lineLayer.lineWidth = 4
                 lineLayer.lineCap = .round
-                lineLayer.fillColor = UIColor.clear.cgColor // <-- Убираем чёрную заливку!
+                lineLayer.fillColor = UIColor.clear.cgColor
                 drawingLayer.addSublayer(lineLayer)
             }
-
-            // Отрисовываем аккуратные белые кружки суставов
             let jointsPath = UIBezierPath()
             for (_, p) in pointsDict {
                 let circle = UIBezierPath(ovalIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8))
@@ -368,9 +443,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             jointsLayer.fillColor = UIColor.white.cgColor
             drawingLayer.addSublayer(jointsLayer)
         }
-
-        // 2. Отрисовка мяча
-        if let (screenRect, conf) = extractBestBallBox(from: ballRequest?.results, width: width, height: height) {
+        if let (screenRect, conf) = ballResult {
             let boxLayer = CAShapeLayer()
             boxLayer.path = UIBezierPath(rect: screenRect).cgPath
             boxLayer.strokeColor = UIColor.blue.cgColor
@@ -391,7 +464,5 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             textLayer.contentsScale = UIScreen.main.scale
             drawingLayer.addSublayer(textLayer)
         }
-
-        return totalPoints
     }
 }
