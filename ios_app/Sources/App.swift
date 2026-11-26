@@ -1,4 +1,5 @@
 ﻿import SwiftUI
+import UIKit
 import AVFoundation
 import Vision
 import CoreML
@@ -23,12 +24,32 @@ struct SkeletonGroup {
     let pairs: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName)]
 }
 
-class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private let captureSession = AVCaptureSession()
-    private var previewLayer: AVCaptureVideoPreviewLayer!
-    private let drawingLayer = CAShapeLayer()
+private struct FrameRenderPayload {
+    let points: [VNHumanBodyPoseObservation.JointName: CGPoint]
+    let ballResult: (CGRect, Float)?
+    let metrics: BasketballMetrics
+    let fps: Double
+    let modelStatus: String
+}
 
-    // UI Элементы
+final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate {
+    // Выделенные последовательные очереди для исключения гонок данных
+    private let sessionQueue = DispatchQueue(label: "com.basketball.sessionQueue", qos: .userInitiated)
+    private let videoQueue = DispatchQueue(label: "com.basketball.videoQueue", qos: .userInitiated)
+
+    // Камера и слои
+    private let captureSession = AVCaptureSession()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private var previewLayer: AVCaptureVideoPreviewLayer!
+    private let drawingLayer = CALayer()
+
+    // Переиспользуемые слои отрисовки (без пересоздания каждый кадр)
+    private var skeletonLineLayers: [CAShapeLayer] = []
+    private let jointsLayer = CAShapeLayer()
+    private let ballBoxLayer = CAShapeLayer()
+    private let ballTextLayer = CATextLayer()
+
+    // UI элементы (доступ только с main)
     private let fpsLabel = UILabel()
     private let switchCameraButton = UIButton(type: .system)
     private let pauseButton = UIButton(type: .system)
@@ -36,14 +57,24 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     private let metricsContainer = UIView()
     private let metricsPrimaryLabel = UILabel()
     private let metricsSecondaryLabel = UILabel()
+    private var isUIPaused: Bool = false
 
-    // Состояние
-    private var isPaused: Bool = false
-    private var currentPosition: AVCaptureDevice.Position = .back
-    private let videoOutput = AVCaptureVideoDataOutput()
-    private var lastTime = CFAbsoluteTimeGetCurrent()
-    private var coreMLModel: VNCoreMLModel?
-    private var modelStatus: String = "NO MODEL"
+    // Состояние камеры (доступ только с sessionQueue)
+    private var sessionPosition: AVCaptureDevice.Position = .back
+
+    // Состояние обработки кадров (доступ только с videoQueue)
+    private var isProcessingPaused: Bool = false
+    private var processingPosition: AVCaptureDevice.Position = .back
+    private var processingOrientation: UIInterfaceOrientation = .portrait
+    private var processingViewSize: CGSize = .zero
+    private var lastFrameTime: CFAbsoluteTime?
+    private var smoothedFPS: Double = 0.0
+    private var modelStatus: String = "Ball: LOADING"
+    private var modelInputSize: CGSize = CGSize(width: 640, height: 640)
+    private var ballClassChannel: Int = 4
+
+    private let poseRequest = VNDetectHumanBodyPoseRequest()
+    private var ballRequest: VNCoreMLRequest?
     private let metricsCalculator = MetricsCalculator()
 
     private let skeletonGroups: [SkeletonGroup] = [
@@ -73,15 +104,29 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupCamera()
+        setupPreviewAndDrawingLayers()
         setupUI()
-        setupModel()
+        setupModelAsync()
+        setupCameraAsync()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        previewLayer?.frame = view.bounds
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        previewLayer.frame = view.bounds
         drawingLayer.frame = view.bounds
+        CATransaction.commit()
+
+        let currentOrientation = currentInterfaceOrientation()
+        updatePreviewOrientation(currentOrientation)
+
+        let boundsSize = view.bounds.size
+        videoQueue.async { [weak self] in
+            self?.processingViewSize = boundsSize
+            self?.processingOrientation = currentOrientation
+        }
 
         let btnSize: CGFloat = 44
         let topPadding: CGFloat = max(55, view.safeAreaInsets.top + 8)
@@ -106,24 +151,118 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         metricsSecondaryLabel.frame = CGRect(x: 12, y: 40, width: metricsContainer.bounds.width - 24, height: 24)
     }
 
-    private func setupCamera() {
-        captureSession.sessionPreset = .hd1280x720
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition),
-              let input = try? AVCaptureDeviceInput(device: device) else { return }
-
-        if captureSession.canAddInput(input) { captureSession.addInput(input) }
-
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
-        if captureSession.canAddOutput(videoOutput) { captureSession.addOutput(videoOutput) }
-
+    private func setupPreviewAndDrawingLayers() {
         previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
         previewLayer.videoGravity = .resizeAspectFill
         view.layer.addSublayer(previewLayer)
         view.layer.addSublayer(drawingLayer)
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        skeletonLineLayers = skeletonGroups.map { group in
+            let layer = CAShapeLayer()
+            layer.strokeColor = group.color.cgColor
+            layer.lineWidth = 4
+            layer.lineCap = .round
+            layer.fillColor = UIColor.clear.cgColor
+            drawingLayer.addSublayer(layer)
+            return layer
+        }
+
+        jointsLayer.fillColor = UIColor.white.cgColor
+        drawingLayer.addSublayer(jointsLayer)
+
+        ballBoxLayer.strokeColor = UIColor.systemBlue.cgColor
+        ballBoxLayer.lineWidth = 4
+        ballBoxLayer.fillColor = UIColor.clear.cgColor
+        ballBoxLayer.isHidden = true
+        drawingLayer.addSublayer(ballBoxLayer)
+
+        ballTextLayer.font = UIFont.boldSystemFont(ofSize: 14)
+        ballTextLayer.fontSize = 14
+        ballTextLayer.foregroundColor = UIColor.white.cgColor
+        ballTextLayer.backgroundColor = UIColor.systemBlue.cgColor
+        ballTextLayer.alignmentMode = .center
+        ballTextLayer.cornerRadius = 4
+        ballTextLayer.masksToBounds = true
+        ballTextLayer.contentsScale = UIScreen.main.scale
+        ballTextLayer.isHidden = true
+        drawingLayer.addSublayer(ballTextLayer)
+    }
+
+    private func setupCameraAsync() {
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.captureSession.beginConfiguration()
+            self.captureSession.sessionPreset = .hd1280x720
+
+            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: self.sessionPosition),
+               let input = try? AVCaptureDeviceInput(device: device),
+               self.captureSession.canAddInput(input) {
+                self.captureSession.addInput(input)
+            }
+
+            self.videoOutput.alwaysDiscardsLateVideoFrames = true
+            self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
+            if self.captureSession.canAddOutput(self.videoOutput) {
+                self.captureSession.addOutput(self.videoOutput)
+            }
+
+            self.captureSession.commitConfiguration()
             self.captureSession.startRunning()
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.updatePreviewOrientation(self.currentInterfaceOrientation())
+            }
+        }
+    }
+
+    private func setupModelAsync() {
+        videoQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let config = MLModelConfiguration()
+            config.computeUnits = .all
+
+            let loadedModel: MLModel?
+            if let model = try? basketball_best(configuration: config).model {
+                loadedModel = model
+            } else if let modelURL = Bundle.main.url(forResource: "basketball_best", withExtension: "mlmodelc"),
+                      let model = try? MLModel(contentsOf: modelURL, configuration: config) {
+                loadedModel = model
+            } else {
+                loadedModel = nil
+            }
+
+            guard let mlModel = loadedModel, let vnModel = try? VNCoreMLModel(for: mlModel) else {
+                self.modelStatus = "Ball: ERR"
+                DispatchQueue.main.async { [weak self] in
+                    self?.fpsLabel.text = "Ball: ERR"
+                }
+                return
+            }
+
+            // Определяем реальный размер входа модели вместо хардкода 640
+            if let imageConstraint = mlModel.modelDescription.inputDescriptionsByName.values
+                .compactMap({ $0.imageConstraint }).first {
+                self.modelInputSize = CGSize(
+                    width: CGFloat(imageConstraint.pixelsWide),
+                    height: CGFloat(imageConstraint.pixelsHigh)
+                )
+            }
+
+            // Определяем индекс канала мяча для сырого тензора
+            if let labels = mlModel.modelDescription.classLabels as? [String],
+               let idx = labels.firstIndex(where: { $0.lowercased().contains("ball") }) {
+                self.ballClassChannel = 4 + idx
+            } else {
+                self.ballClassChannel = 4
+            }
+
+            let request = VNCoreMLRequest(model: vnModel)
+            // Сохраняем пропорции мяча без сплющивания (letterbox)
+            request.imageCropAndScaleOption = .scaleFit
+            self.ballRequest = request
+            self.modelStatus = "Ball: OK"
         }
     }
 
@@ -135,6 +274,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         fpsLabel.clipsToBounds = true
         fpsLabel.textAlignment = .center
         fpsLabel.adjustsFontSizeToFitWidth = true
+        fpsLabel.text = "Загрузка модели..."
         view.addSubview(fpsLabel)
 
         resetButton.setImage(UIImage(systemName: "arrow.counterclockwise"), for: .normal)
@@ -180,145 +320,189 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     }
 
     @objc private func resetMetrics() {
-        metricsCalculator.reset()
+        videoQueue.async { [weak self] in
+            self?.metricsCalculator.reset()
+        }
         metricsPrimaryLabel.text = "Удары: 0   |   Броски: 0   |   Потери: 0"
         metricsSecondaryLabel.text = "Темп: 0.00 уд/с   |   Высота: 0.0 см"
     }
 
     @objc private func togglePause() {
-        isPaused.toggle()
+        isUIPaused.toggle()
+        let paused = isUIPaused
 
         let config = UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)
-        let iconName = isPaused ? "play.fill" : "pause.fill"
+        let iconName = paused ? "play.fill" : "pause.fill"
         pauseButton.setImage(UIImage(systemName: iconName, withConfiguration: config), for: .normal)
-        pauseButton.tintColor = isPaused ? .systemYellow : .white
+        pauseButton.tintColor = paused ? .systemYellow : .white
 
-        if isPaused {
-            DispatchQueue.global(qos: .userInitiated).async {
-                self.captureSession.stopRunning()
+        videoQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.isProcessingPaused = paused
+            self.lastFrameTime = nil
+            if paused {
+                self.metricsCalculator.notifyPause()
+                let status = self.modelStatus
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.isUIPaused else { return }
+                    self.fpsLabel.text = String(format: "PAUSED | %@", status)
+                    self.fpsLabel.textColor = .systemYellow
+                }
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, !self.isUIPaused else { return }
+                    self.fpsLabel.textColor = .green
+                }
             }
-            fpsLabel.text = String(format: "PAUSED | %@", modelStatus)
-            fpsLabel.textColor = .systemYellow
-        } else {
-            lastTime = CFAbsoluteTimeGetCurrent()
-            fpsLabel.textColor = .green
-            DispatchQueue.global(qos: .userInitiated).async {
-                self.captureSession.startRunning()
+        }
+
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            if paused {
+                if self.captureSession.isRunning {
+                    self.captureSession.stopRunning()
+                }
+            } else {
+                if !self.captureSession.isRunning {
+                    self.captureSession.startRunning()
+                }
             }
         }
     }
 
     @objc private func toggleCamera() {
-        captureSession.beginConfiguration()
-        guard let currentInput = captureSession.inputs.first as? AVCaptureDeviceInput else {
-            captureSession.commitConfiguration()
-            return
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.captureSession.beginConfiguration()
+
+            guard let currentInput = self.captureSession.inputs.first as? AVCaptureDeviceInput else {
+                self.captureSession.commitConfiguration()
+                return
+            }
+
+            let nextPosition: AVCaptureDevice.Position = (self.sessionPosition == .back) ? .front : .back
+            guard let newDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: nextPosition),
+                  let newInput = try? AVCaptureDeviceInput(device: newDevice) else {
+                self.captureSession.commitConfiguration()
+                return
+            }
+
+            self.captureSession.removeInput(currentInput)
+            if self.captureSession.canAddInput(newInput) {
+                self.captureSession.addInput(newInput)
+                self.sessionPosition = nextPosition
+            } else {
+                self.captureSession.addInput(currentInput)
+            }
+
+            if let connection = self.videoOutput.connection(with: .video), connection.isVideoMirroringSupported {
+                connection.isVideoMirrored = false
+            }
+
+            self.captureSession.commitConfiguration()
+
+            let confirmedPosition = self.sessionPosition
+            self.videoQueue.async { [weak self] in
+                guard let self = self else { return }
+                self.processingPosition = confirmedPosition
+                self.metricsCalculator.notifyPause()
+            }
         }
-        captureSession.removeInput(currentInput)
-
-        currentPosition = (currentPosition == .back) ? .front : .back
-
-        guard let newDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition),
-              let newInput = try? AVCaptureDeviceInput(device: newDevice) else {
-            captureSession.commitConfiguration()
-            return
-        }
-
-        if captureSession.canAddInput(newInput) { captureSession.addInput(newInput) }
-
-        if let connection = videoOutput.connection(with: .video), connection.isVideoMirroringSupported {
-            connection.isVideoMirrored = false
-        }
-
-        captureSession.commitConfiguration()
     }
 
-    private func setupModel() {
-        if let model = try? basketball_best(configuration: MLModelConfiguration()).model,
-           let vnModel = try? VNCoreMLModel(for: model) {
-            self.coreMLModel = vnModel
-            self.modelStatus = "Ball: OK"
-        } else if let modelURL = Bundle.main.url(forResource: "basketball_best", withExtension: "mlmodelc"),
-                  let mlModel = try? MLModel(contentsOf: modelURL),
-                  let vnModel = try? VNCoreMLModel(for: mlModel) {
-            self.coreMLModel = vnModel
-            self.modelStatus = "Ball: OK"
-        } else {
-            self.modelStatus = "Ball: ERR"
-        }
-    }
+    // MARK: - Обработка видеопотока (исполняется строго на videoQueue)
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard !isPaused, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard !isProcessingPaused,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
 
         let currentTime = CFAbsoluteTimeGetCurrent()
-        let fps = 1.0 / max(0.001, currentTime - lastTime)
-        lastTime = currentTime
+        if let prev = lastFrameTime {
+            let instantFPS = 1.0 / max(0.001, currentTime - prev)
+            smoothedFPS = (smoothedFPS == 0) ? instantFPS : (0.2 * instantFPS + 0.8 * smoothedFPS)
+        }
+        lastFrameTime = currentTime
 
-        var requests: [VNRequest] = []
+        let cgOrientation = visionOrientation(for: processingPosition, interfaceOrientation: processingOrientation)
+        let rawWidth = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
+        let rawHeight = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
 
-        let poseRequest = VNDetectHumanBodyPoseRequest()
-        requests.append(poseRequest)
-
-        var ballRequest: VNCoreMLRequest?
-        if let model = coreMLModel {
-            let req = VNCoreMLRequest(model: model)
-            req.imageCropAndScaleOption = .scaleFill
-            requests.append(req)
-            ballRequest = req
+        let isPortraitOriented: Bool
+        switch cgOrientation {
+        case .left, .right, .leftMirrored, .rightMirrored:
+            isPortraitOriented = true
+        default:
+            isPortraitOriented = false
         }
 
-        let orientation: CGImagePropertyOrientation = (currentPosition == .front) ? .leftMirrored : .right
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
+        let frameWidth = isPortraitOriented ? rawHeight : rawWidth
+        let frameHeight = isPortraitOriented ? rawWidth : rawHeight
+
+        var requests: [VNRequest] = [poseRequest]
+        if let ballReq = ballRequest {
+            requests.append(ballReq)
+        }
+
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: cgOrientation, options: [:])
         try? handler.perform(requests)
 
-        DispatchQueue.main.async {
-            guard !self.isPaused else { return }
-            let width = self.view.bounds.width
-            let height = self.view.bounds.height
+        // 1. Извлекаем координаты в неискажённом пространстве ориентированного кадра
+        let framePoints = extractPosePoints(from: poseRequest, frameWidth: frameWidth, frameHeight: frameHeight)
+        let frameBall = extractBestBallBox(from: ballRequest?.results, frameWidth: frameWidth, frameHeight: frameHeight)
 
-            let pointsDict = self.extractPosePoints(from: poseRequest, width: width, height: height)
-            let ballResult = self.extractBestBallBox(from: ballRequest?.results, width: width, height: height)
+        // 2. Считаем метрики в неискажённых пикселях кадра на videoQueue
+        let metrics = metricsCalculator.update(
+            ballRect: frameBall?.0,
+            leftWrist: framePoints[.leftWrist],
+            rightWrist: framePoints[.rightWrist],
+            leftShoulder: framePoints[.leftShoulder],
+            rightShoulder: framePoints[.rightShoulder],
+            timestamp: currentTime,
+            frameWidth: frameWidth,
+            frameHeight: frameHeight
+        )
 
-            self.drawResults(pointsDict: pointsDict, ballResult: ballResult)
+        // 3. Переводим координаты в экранное пространство previewLayer (resizeAspectFill)
+        let viewSize = processingViewSize
+        let screenPoints = mapPointsToScreen(framePoints, frameWidth: frameWidth, frameHeight: frameHeight, viewSize: viewSize)
+        let screenBall: (CGRect, Float)? = frameBall.map { (rect, conf) in
+            (mapRectToScreen(rect, frameWidth: frameWidth, frameHeight: frameHeight, viewSize: viewSize), conf)
+        }
 
-            let metrics = self.metricsCalculator.update(
-                ballRect: ballResult?.0,
-                leftWrist: pointsDict[.leftWrist],
-                rightWrist: pointsDict[.rightWrist],
-                leftShoulder: pointsDict[.leftShoulder],
-                rightShoulder: pointsDict[.rightShoulder],
-                timestamp: currentTime,
-                viewWidth: width,
-                viewHeight: height
-            )
+        let payload = FrameRenderPayload(
+            points: screenPoints,
+            ballResult: screenBall,
+            metrics: metrics,
+            fps: smoothedFPS,
+            modelStatus: modelStatus
+        )
 
-            self.fpsLabel.text = String(format: "FPS: %.1f | Pose: %d | %@", fps, pointsDict.count, self.modelStatus)
-            self.metricsPrimaryLabel.text = String(
-                format: "Удары: %d   |   Броски: %d   |   Потери: %d",
-                metrics.realBounces, metrics.shots, metrics.falseBounces
-            )
-            self.metricsSecondaryLabel.text = String(
-                format: "Темп: %.2f уд/с   |   Высота: %.1f см",
-                metrics.tempo, metrics.avgBounceHeightCm
-            )
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.isUIPaused else { return }
+            self.render(payload)
         }
     }
+
+    // MARK: - Извлечение детекций (ориентированные пиксели кадра, top-left origin)
 
     private func extractPosePoints(
         from pose: VNDetectHumanBodyPoseRequest,
-        width: CGFloat,
-        height: CGFloat
+        frameWidth: CGFloat,
+        frameHeight: CGFloat
     ) -> [VNHumanBodyPoseObservation.JointName: CGPoint] {
         var pointsDict: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
-        guard let results = pose.results?.first else { return pointsDict }
+        guard let observation = pose.results?.first else { return pointsDict }
 
         for group in skeletonGroups {
-            for pair in group.pairs {
-                for joint in [pair.0, pair.1] {
-                    if pointsDict[joint] == nil,
-                       let point = try? results.recognizedPoint(joint), point.confidence > 0.15 {
-                        pointsDict[joint] = CGPoint(x: point.location.x * width, y: (1 - point.location.y) * height)
+            for (j1, j2) in group.pairs {
+                for joint in [j1, j2] where pointsDict[joint] == nil {
+                    if let point = try? observation.recognizedPoint(joint), point.confidence > 0.15 {
+                        pointsDict[joint] = CGPoint(
+                            x: point.location.x * frameWidth,
+                            y: (1.0 - point.location.y) * frameHeight
+                        )
                     }
                 }
             }
@@ -326,10 +510,14 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         return pointsDict
     }
 
-    private func extractBestBallBox(from results: [Any]?, width: CGFloat, height: CGFloat) -> (CGRect, Float)? {
+    private func extractBestBallBox(
+        from results: [Any]?,
+        frameWidth: CGFloat,
+        frameHeight: CGFloat
+    ) -> (CGRect, Float)? {
         guard let results = results else { return nil }
 
-        // 1. Модель со встроенным NMS
+        // 1. Модель со встроенным NMS (Vision сам компенсирует .scaleFit)
         if let observations = results as? [VNRecognizedObjectObservation] {
             let ballObs = observations.filter { obs in
                 guard let label = obs.labels.first?.identifier.lowercased() else { return true }
@@ -338,16 +526,16 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             if let best = ballObs.max(by: { $0.confidence < $1.confidence }), best.confidence > 0.20 {
                 let box = best.boundingBox
                 let rect = CGRect(
-                    x: box.origin.x * width,
-                    y: (1 - box.origin.y - box.height) * height,
-                    width: box.width * width,
-                    height: box.height * height
+                    x: box.origin.x * frameWidth,
+                    y: (1.0 - box.origin.y - box.height) * frameHeight,
+                    width: box.width * frameWidth,
+                    height: box.height * frameHeight
                 )
                 return (rect, best.confidence)
             }
         }
 
-        // 2. Модель с сырым тензором [1, 6, 8400]
+        // 2. Сырой тензор YOLO [1, 4 + numClasses, anchors] с обратным un-letterboxing под .scaleFit
         if let featureObs = results as? [VNCoreMLFeatureValueObservation],
            let multiArray = featureObs.first?.featureValue.multiArrayValue {
 
@@ -357,112 +545,235 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             let anchors = shape[2]
             guard channels >= 5, anchors > 0 else { return nil }
 
+            let targetChannel = min(ballClassChannel, channels - 1)
             let strides = multiArray.strides.map { $0.intValue }
             let cStride = strides[1]
             let aStride = strides[2]
 
             var bestConf: Float = 0.20
             var bestAnchor = -1
+            var rawCX: CGFloat = 0
+            var rawCY: CGFloat = 0
+            var rawW: CGFloat = 0
+            var rawH: CGFloat = 0
 
+            #if arch(arm64)
             if multiArray.dataType == .float16 {
                 let ptr = multiArray.dataPointer.bindMemory(to: Float16.self, capacity: multiArray.count)
                 for a in 0..<anchors {
-                    let conf = Float(ptr[4 * cStride + a * aStride])
+                    let conf = Float(ptr[targetChannel * cStride + a * aStride])
                     if conf > bestConf {
                         bestConf = conf
                         bestAnchor = a
                     }
                 }
                 if bestAnchor >= 0 {
-                    var cx = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
-                    var cy = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
-                    var w  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
-                    var h  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
-                    if cx > 2.0 || cy > 2.0 || w > 2.0 {
-                        cx /= 640.0; cy /= 640.0; w /= 640.0; h /= 640.0
-                    }
-                    let rect = CGRect(x: (cx - w / 2) * width, y: (cy - h / 2) * height, width: w * width, height: h * height)
-                    return (rect, bestConf)
+                    rawCX = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
+                    rawCY = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
+                    rawW  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
+                    rawH  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
                 }
             } else if multiArray.dataType == .float32 {
                 let ptr = multiArray.dataPointer.bindMemory(to: Float32.self, capacity: multiArray.count)
                 for a in 0..<anchors {
-                    let conf = ptr[4 * cStride + a * aStride]
+                    let conf = ptr[targetChannel * cStride + a * aStride]
                     if conf > bestConf {
                         bestConf = conf
                         bestAnchor = a
                     }
                 }
                 if bestAnchor >= 0 {
-                    var cx = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
-                    var cy = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
-                    var w  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
-                    var h  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
-                    if cx > 2.0 || cy > 2.0 || w > 2.0 {
-                        cx /= 640.0; cy /= 640.0; w /= 640.0; h /= 640.0
-                    }
-                    let rect = CGRect(x: (cx - w / 2) * width, y: (cy - h / 2) * height, width: w * width, height: h * height)
-                    return (rect, bestConf)
+                    rawCX = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
+                    rawCY = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
+                    rawW  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
+                    rawH  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
                 }
             }
+            #else
+            if multiArray.dataType == .float32 {
+                let ptr = multiArray.dataPointer.bindMemory(to: Float32.self, capacity: multiArray.count)
+                for a in 0..<anchors {
+                    let conf = ptr[targetChannel * cStride + a * aStride]
+                    if conf > bestConf {
+                        bestConf = conf
+                        bestAnchor = a
+                    }
+                }
+                if bestAnchor >= 0 {
+                    rawCX = CGFloat(ptr[0 * cStride + bestAnchor * aStride])
+                    rawCY = CGFloat(ptr[1 * cStride + bestAnchor * aStride])
+                    rawW  = CGFloat(ptr[2 * cStride + bestAnchor * aStride])
+                    rawH  = CGFloat(ptr[3 * cStride + bestAnchor * aStride])
+                }
+            }
+            #endif
+
+            if bestAnchor >= 0 {
+                let modelW = modelInputSize.width
+                let modelH = modelInputSize.height
+
+                // Приводим к пикселям входа модели, если выход нормализован в [0, 1]
+                var cx = rawCX
+                var cy = rawCY
+                var w = rawW
+                var h = rawH
+                if cx <= 2.0 && cy <= 2.0 && w <= 2.0 && h <= 2.0 {
+                    cx *= modelW
+                    cy *= modelH
+                    w *= modelW
+                    h *= modelH
+                }
+
+                // Компенсация letterbox-полей от .scaleFit
+                let scale = min(modelW / frameWidth, modelH / frameHeight)
+                let padX = (modelW - frameWidth * scale) / 2.0
+                let padY = (modelH - frameHeight * scale) / 2.0
+
+                let imgCX = (cx - padX) / scale
+                let imgCY = (cy - padY) / scale
+                let imgW = w / scale
+                let imgH = h / scale
+
+                let rect = CGRect(x: imgCX - imgW / 2.0, y: imgCY - imgH / 2.0, width: imgW, height: imgH)
+                return (rect, bestConf)
+            }
         }
+
         return nil
     }
 
-    private func drawResults(
-        pointsDict: [VNHumanBodyPoseObservation.JointName: CGPoint],
-        ballResult: (CGRect, Float)?
-    ) {
-        drawingLayer.sublayers?.removeAll()
+    // MARK: - Проекция координат на экран (resizeAspectFill) и ориентация
 
-        // 1. Отрисовка скелета
-        if !pointsDict.isEmpty {
-            for group in skeletonGroups {
-                let groupPath = UIBezierPath()
-                for (j1, j2) in group.pairs {
-                    if let p1 = pointsDict[j1], let p2 = pointsDict[j2] {
-                        groupPath.move(to: p1)
-                        groupPath.addLine(to: p2)
-                    }
+    private func aspectFillTransform(frameWidth: CGFloat, frameHeight: CGFloat, viewSize: CGSize) -> (scale: CGFloat, offsetX: CGFloat, offsetY: CGFloat) {
+        guard frameWidth > 0, frameHeight > 0, viewSize.width > 0, viewSize.height > 0 else {
+            return (1, 0, 0)
+        }
+        let scale = max(viewSize.width / frameWidth, viewSize.height / frameHeight)
+        let offsetX = (viewSize.width - frameWidth * scale) / 2.0
+        let offsetY = (viewSize.height - frameHeight * scale) / 2.0
+        return (scale, offsetX, offsetY)
+    }
+
+    private func mapPointsToScreen(
+        _ points: [VNHumanBodyPoseObservation.JointName: CGPoint],
+        frameWidth: CGFloat,
+        frameHeight: CGFloat,
+        viewSize: CGSize
+    ) -> [VNHumanBodyPoseObservation.JointName: CGPoint] {
+        let (scale, offsetX, offsetY) = aspectFillTransform(frameWidth: frameWidth, frameHeight: frameHeight, viewSize: viewSize)
+        var mapped: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
+        mapped.reserveCapacity(points.count)
+        for (joint, pt) in points {
+            mapped[joint] = CGPoint(x: pt.x * scale + offsetX, y: pt.y * scale + offsetY)
+        }
+        return mapped
+    }
+
+    private func mapRectToScreen(_ rect: CGRect, frameWidth: CGFloat, frameHeight: CGFloat, viewSize: CGSize) -> CGRect {
+        let (scale, offsetX, offsetY) = aspectFillTransform(frameWidth: frameWidth, frameHeight: frameHeight, viewSize: viewSize)
+        return CGRect(
+            x: rect.origin.x * scale + offsetX,
+            y: rect.origin.y * scale + offsetY,
+            width: rect.width * scale,
+            height: rect.height * scale
+        )
+    }
+
+    private func currentInterfaceOrientation() -> UIInterfaceOrientation {
+        view.window?.windowScene?.interfaceOrientation ?? .portrait
+    }
+
+    private func updatePreviewOrientation(_ orientation: UIInterfaceOrientation) {
+        guard let connection = previewLayer?.connection else { return }
+        if #available(iOS 17.0, *) {
+            let angle: CGFloat
+            switch orientation {
+            case .portrait:           angle = 90
+            case .portraitUpsideDown: angle = 270
+            case .landscapeRight:     angle = 0
+            case .landscapeLeft:      angle = 180
+            default:                  angle = 90
+            }
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+            }
+        } else if connection.isVideoOrientationSupported {
+            switch orientation {
+            case .portrait:           connection.videoOrientation = .portrait
+            case .portraitUpsideDown: connection.videoOrientation = .portraitUpsideDown
+            case .landscapeRight:     connection.videoOrientation = .landscapeRight
+            case .landscapeLeft:      connection.videoOrientation = .landscapeLeft
+            default:                  connection.videoOrientation = .portrait
+            }
+        }
+    }
+
+    private func visionOrientation(
+        for position: AVCaptureDevice.Position,
+        interfaceOrientation: UIInterfaceOrientation
+    ) -> CGImagePropertyOrientation {
+        switch (position, interfaceOrientation) {
+        case (.front, .portrait):           return .leftMirrored
+        case (.front, .portraitUpsideDown): return .rightMirrored
+        case (.front, .landscapeRight):     return .upMirrored
+        case (.front, .landscapeLeft):      return .downMirrored
+        case (_, .portrait):                return .right
+        case (_, .portraitUpsideDown):      return .left
+        case (_, .landscapeRight):          return .up
+        case (_, .landscapeLeft):           return .down
+        default:                            return position == .front ? .leftMirrored : .right
+        }
+    }
+
+    // MARK: - Отрисовка на main thread без пересоздания слоёв
+
+    private func render(_ payload: FrameRenderPayload) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        for (idx, group) in skeletonGroups.enumerated() {
+            let groupPath = UIBezierPath()
+            for (j1, j2) in group.pairs {
+                if let p1 = payload.points[j1], let p2 = payload.points[j2] {
+                    groupPath.move(to: p1)
+                    groupPath.addLine(to: p2)
                 }
-                let lineLayer = CAShapeLayer()
-                lineLayer.path = groupPath.cgPath
-                lineLayer.strokeColor = group.color.cgColor
-                lineLayer.lineWidth = 4
-                lineLayer.lineCap = .round
-                lineLayer.fillColor = UIColor.clear.cgColor
-                drawingLayer.addSublayer(lineLayer)
             }
-            let jointsPath = UIBezierPath()
-            for (_, p) in pointsDict {
-                let circle = UIBezierPath(ovalIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8))
-                jointsPath.append(circle)
-            }
-            let jointsLayer = CAShapeLayer()
-            jointsLayer.path = jointsPath.cgPath
-            jointsLayer.fillColor = UIColor.white.cgColor
-            drawingLayer.addSublayer(jointsLayer)
+            skeletonLineLayers[idx].path = groupPath.isEmpty ? nil : groupPath.cgPath
         }
-        if let (screenRect, conf) = ballResult {
-            let boxLayer = CAShapeLayer()
-            boxLayer.path = UIBezierPath(rect: screenRect).cgPath
-            boxLayer.strokeColor = UIColor.blue.cgColor
-            boxLayer.lineWidth = 4
-            boxLayer.fillColor = UIColor.clear.cgColor
-            drawingLayer.addSublayer(boxLayer)
 
-            let textLayer = CATextLayer()
-            textLayer.string = String(format: "Ball %.2f", conf)
-            textLayer.font = UIFont.boldSystemFont(ofSize: 14)
-            textLayer.fontSize = 14
-            textLayer.foregroundColor = UIColor.white.cgColor
-            textLayer.backgroundColor = UIColor.blue.cgColor
-            textLayer.alignmentMode = .center
-            textLayer.cornerRadius = 4
-            textLayer.masksToBounds = true
-            textLayer.frame = CGRect(x: screenRect.minX, y: max(0, screenRect.minY - 24), width: 85, height: 20)
-            textLayer.contentsScale = UIScreen.main.scale
-            drawingLayer.addSublayer(textLayer)
+        if payload.points.isEmpty {
+            jointsLayer.path = nil
+        } else {
+            let jointsPath = UIBezierPath()
+            for (_, p) in payload.points {
+                jointsPath.append(UIBezierPath(ovalIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)))
+            }
+            jointsLayer.path = jointsPath.cgPath
         }
+
+        if let (screenRect, conf) = payload.ballResult {
+            ballBoxLayer.isHidden = false
+            ballBoxLayer.path = UIBezierPath(rect: screenRect).cgPath
+
+            ballTextLayer.isHidden = false
+            ballTextLayer.string = String(format: "Ball %.2f", conf)
+            ballTextLayer.frame = CGRect(x: screenRect.minX, y: max(0, screenRect.minY - 24), width: 85, height: 20)
+        } else {
+            ballBoxLayer.isHidden = true
+            ballTextLayer.isHidden = true
+        }
+
+        CATransaction.commit()
+
+        fpsLabel.text = String(format: "FPS: %.1f | Pose: %d | %@", payload.fps, payload.points.count, payload.modelStatus)
+        metricsPrimaryLabel.text = String(
+            format: "Удары: %d   |   Броски: %d   |   Потери: %d",
+            payload.metrics.realBounces, payload.metrics.shots, payload.metrics.falseBounces
+        )
+        metricsSecondaryLabel.text = String(
+            format: "Темп: %.2f уд/с   |   Высота: %.1f см",
+            payload.metrics.tempo, payload.metrics.avgBounceHeightCm
+        )
     }
 }
