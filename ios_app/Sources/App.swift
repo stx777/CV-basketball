@@ -13,20 +13,12 @@ struct BasketballApp: App {
     }
 }
 
-// MARK: - Главная навигация (3 вкладки)
+// MARK: - Главная навигация
 
 struct RootTabView: View {
     @EnvironmentObject var store: AppStore
     @State private var selectedTab = 0
     @State private var isWorkoutPresented = false
-
-    init() {
-        let appearance = UITabBarAppearance()
-        appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = UIColor(red: 0.055, green: 0.065, blue: 0.090, alpha: 0.96)
-        UITabBar.appearance().standardAppearance = appearance
-        UITabBar.appearance().scrollEdgeAppearance = appearance
-    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -38,20 +30,19 @@ struct RootTabView: View {
 
             HistoryView()
                 .tabItem {
-                    Label("История", systemImage: "chart.bar.fill")
+                    Label("История", systemImage: "clock.arrow.circlepath")
                 }
                 .tag(1)
 
             SettingsView()
                 .tabItem {
-                    Label("Настройки", systemImage: "slider.horizontal.3")
+                    Label("Настройки", systemImage: "gearshape.fill")
                 }
                 .tag(2)
         }
         .tint(AppTheme.orange)
         .fullScreenCover(isPresented: $isWorkoutPresented) {
             CameraWorkoutView(
-                mode: store.selectedMode,
                 showSkeleton: store.showSkeleton,
                 showBallBox: store.showBallBox,
                 showDebugHUD: store.showDebugHUD
@@ -61,110 +52,71 @@ struct RootTabView: View {
     }
 }
 
-// MARK: - Экран 1: Главная (Dashboard)
+// MARK: - Экран 1: Главная
 
 struct HomeView: View {
-    @EnvironmentObject var store: AppStore
     let onStartWorkout: () -> Void
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 22) {
-                    headerSection
-                    heroStartCard
-                    modeSelectorSection
-                    todayStatsSection
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("Начинаем?")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(.white)
+                        .padding(.top, 8)
 
-                    if let last = store.history.first {
-                        lastWorkoutSection(last)
-                    }
+                    heroStartCard
+                    modeDescriptionCard
                 }
                 .padding(.horizontal, 18)
-                .padding(.top, 12)
                 .padding(.bottom, 32)
             }
             .background(AppTheme.bgPrimary.ignoresSafeArea())
         }
     }
 
-    private var headerSection: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("HOOPVISION AI")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(AppTheme.orange)
-                    .tracking(1.4)
-
-                Text("Готов к дриблингу?")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-            }
-
-            Spacer()
-
-            HStack(spacing: 6) {
-                Image(systemName: "flame.fill")
-                    .foregroundStyle(AppTheme.orange)
-                Text("\(store.history.count)")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(AppTheme.bgCard)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(AppTheme.border, lineWidth: 1))
-        }
-    }
-
     private var heroStartCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(store.selectedMode.rawValue, systemImage: store.selectedMode.icon)
-                        .font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Свободный дриблинг", systemImage: "basketball.fill")
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.orangeLight)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                         .background(AppTheme.orange.opacity(0.16))
                         .clipShape(Capsule())
 
                     Text("Анализ в реальном времени")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .font(.title2.bold())
                         .foregroundStyle(.white)
-                        .padding(.top, 4)
-
-                    Text(store.selectedMode.subtitle)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.68))
                 }
 
                 Spacer()
 
                 ZStack {
                     Circle()
-                        .fill(AppTheme.orange.opacity(0.18))
-                        .frame(width: 56, height: 56)
+                        .fill(AppTheme.orange.opacity(0.16))
+                        .frame(width: 54, height: 54)
                     Image(systemName: "basketball.fill")
-                        .font(.system(size: 28))
+                        .font(.title2)
                         .foregroundStyle(AppTheme.orangeGradient)
                 }
             }
 
             Button(action: onStartWorkout) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Image(systemName: "video.fill")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.headline)
                     Text("Начать тренировку")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .font(.headline)
                 }
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
                 .background(AppTheme.orangeGradient)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: AppTheme.orange.opacity(0.35), radius: 14, y: 6)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
         }
@@ -173,113 +125,52 @@ struct HomeView: View {
             ZStack {
                 AppTheme.bgCard
                 LinearGradient(
-                    colors: [AppTheme.orange.opacity(0.18), .clear],
+                    colors: [AppTheme.orange.opacity(0.14), .clear],
                     startPoint: .topTrailing,
                     endPoint: .bottomLeading
                 )
             }
         )
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(AppTheme.orange.opacity(0.28), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.orange.opacity(0.25), lineWidth: 1)
         )
     }
 
-    private var modeSelectorSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Режим тренировки")
-                .font(.system(size: 17, weight: .bold, design: .rounded))
+    private var modeDescriptionCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("О режиме")
+                .font(.headline)
                 .foregroundStyle(.white)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(WorkoutMode.allCases) { mode in
-                        let isSelected = store.selectedMode == mode
-                        Button {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
-                                store.selectedMode = mode
-                            }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Image(systemName: mode.icon)
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(isSelected ? .white : mode.accentColor)
-                                    .frame(width: 36, height: 36)
-                                    .background(isSelected ? mode.accentColor : mode.accentColor.opacity(0.14))
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Text("Камера отслеживает траекторию мяча и положение рук в кадре, автоматически подсчитывая ключевые показатели дриблинга.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-                                Text(mode.rawValue)
-                                    .font(.system(size: 14, weight: .bold, design: .rounded))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-
-                                Text(mode.subtitle)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.white.opacity(0.55))
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.leading)
-                            }
-                            .frame(width: 158, alignment: .leading)
-                            .padding(14)
-                            .background(isSelected ? AppTheme.bgElevated : AppTheme.bgCard)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .stroke(isSelected ? mode.accentColor : AppTheme.border, lineWidth: isSelected ? 1.5 : 1)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 10) {
+                infoRow(icon: "arrow.down.to.line", color: AppTheme.orange, text: "Удары, темп (уд/с) и средняя высота отскока")
+                infoRow(icon: "hand.raised.fill", color: AppTheme.mint, text: "Контроль мяча, потери и броски")
+                infoRow(icon: "iphone.rear.camera", color: AppTheme.blue, text: "Поставьте телефон на расстоянии 2–3 м, чтобы быть в полный рост")
             }
-        }
-    }
-
-    private var todayStatsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Твоя форма")
-                .font(.system(size: 17, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-
-            HStack(spacing: 12) {
-                metricTile(title: "Удары сегодня", value: "\(store.todayBounces)", unit: "уд", color: AppTheme.orange)
-                metricTile(title: "Лучший темп", value: String(format: "%.2f", store.bestTempo), unit: "уд/с", color: AppTheme.mint)
-                metricTile(title: "Контроль", value: "\(store.averageControl)%", unit: "ср.", color: AppTheme.blue)
-            }
-        }
-    }
-
-    private func metricTile(title: String, value: String, unit: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(1)
-
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.system(size: 21, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(color)
-                    .minimumScaleFactor(0.75)
-                    .lineLimit(1)
-                Text(unit)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.45))
-            }
+            .padding(.top, 2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .darkCard(cornerRadius: 16, padding: 14)
+        .darkCard(cornerRadius: 20, padding: 18)
     }
 
-    private func lastWorkoutSection(_ record: WorkoutRecord) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Последняя сессия")
-                .font(.system(size: 17, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+    private func infoRow(icon: String, color: Color, text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(color)
+                .frame(width: 22)
+                .padding(.top, 1)
 
-            WorkoutRowCard(record: record)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.88))
         }
     }
 }
@@ -290,50 +181,36 @@ struct CameraWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var store: AppStore
 
-    let mode: WorkoutMode
     let showDebugHUD: Bool
 
     @StateObject private var session: CameraSessionStore
     @State private var finishedRecord: WorkoutRecord?
+    @State private var shouldDismissWorkout = false
 
-    init(mode: WorkoutMode, showSkeleton: Bool, showBallBox: Bool, showDebugHUD: Bool) {
-        self.mode = mode
+    init(showSkeleton: Bool, showBallBox: Bool, showDebugHUD: Bool) {
         self.showDebugHUD = showDebugHUD
         _session = StateObject(wrappedValue: CameraSessionStore(showSkeleton: showSkeleton, showBallBox: showBallBox))
     }
 
     var body: some View {
         ZStack {
-            // Слой живой камеры + Vision/Core ML оверлеи
             CameraPreviewRepresentable(session: session)
                 .ignoresSafeArea()
 
-            // Мягкие виньетки для идеальной читаемости HUD
             VStack(spacing: 0) {
-                LinearGradient(
-                    colors: [Color.black.opacity(0.65), .clear],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 140)
-
+                LinearGradient(colors: [Color.black.opacity(0.62), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 130)
                 Spacer()
-
-                LinearGradient(
-                    colors: [.clear, Color.black.opacity(0.82)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 260)
+                LinearGradient(colors: [.clear, Color.black.opacity(0.82)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 250)
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
 
-            // Интерфейс поверх камеры
             VStack {
                 topHUD
                 Spacer()
-                if session.isPaused {
+                if session.isPaused && finishedRecord == nil {
                     pausedBanner
                     Spacer()
                 }
@@ -345,44 +222,56 @@ struct CameraWorkoutView: View {
         }
         .statusBarHidden(true)
         .sheet(item: $finishedRecord, onDismiss: {
-            dismiss()
-        }) { record in
-            WorkoutSummaryView(record: record) {
-                store.save(record)
-                finishedRecord = nil
-            } onDiscard: {
-                finishedRecord = nil
+            if shouldDismissWorkout {
+                session.stop()
+                DispatchQueue.main.async {
+                    dismiss()
+                }
+            } else {
+                session.setPaused(false)
             }
+        }) { record in
+            WorkoutSummaryView(
+                record: record,
+                onSave: {
+                    store.save(record)
+                    shouldDismissWorkout = true
+                    finishedRecord = nil
+                },
+                onDiscard: {
+                    shouldDismissWorkout = true
+                    finishedRecord = nil
+                }
+            )
             .preferredColorScheme(.dark)
         }
     }
 
     private var topHUD: some View {
         HStack(spacing: 10) {
-            // Пилюля статуса и таймера
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(session.isPaused ? Color.yellow : AppTheme.red)
                         .frame(width: 8, height: 8)
                     Text(session.formattedElapsed)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(.white)
                 }
 
                 if showDebugHUD {
                     Rectangle()
-                        .fill(Color.white.opacity(0.18))
+                        .fill(Color.white.opacity(0.2))
                         .frame(width: 1, height: 14)
 
                     Text(String(format: "%.0f FPS", session.fps))
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .font(.caption.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(session.fps >= 24 ? AppTheme.mint : .yellow)
 
                     Text(session.modelStatus)
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(session.isModelReady ? AppTheme.mint : AppTheme.red)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -397,10 +286,7 @@ struct CameraWorkoutView: View {
 
             Spacer()
 
-            GlassCircleButton(
-                icon: "figure.walk",
-                isActive: session.showSkeleton
-            ) {
+            GlassCircleButton(icon: "figure.walk", isActive: session.showSkeleton) {
                 session.toggleSkeleton()
             }
 
@@ -419,39 +305,34 @@ struct CameraWorkoutView: View {
         HStack(spacing: 8) {
             Image(systemName: "pause.circle.fill")
                 .foregroundStyle(.yellow)
-            Text("ПАУЗА")
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .tracking(1.2)
+            Text("Пауза")
+                .font(.headline)
                 .foregroundStyle(.white)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.yellow.opacity(0.45), lineWidth: 1))
+        .overlay(Capsule().stroke(Color.yellow.opacity(0.4), lineWidth: 1))
     }
 
     private var bottomHUD: some View {
         VStack(spacing: 14) {
-            // Стеклянная панель метрик
             VStack(spacing: 12) {
                 HStack(alignment: .center, spacing: 14) {
-                    // Главный счётчик ударов
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("УДАРЫ")
-                            .font(.system(size: 11, weight: .bold))
+                        Text("Удары")
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.orangeLight)
-                            .tracking(1.0)
 
                         Text("\(session.metrics.realBounces)")
-                            .font(.system(size: 46, weight: .heavy, design: .rounded))
+                            .font(.system(size: 44, weight: .bold))
                             .monospacedDigit()
                             .contentTransition(.numericText())
                             .foregroundStyle(.white)
-                            .animation(.snappy, value: session.metrics.realBounces)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: session.metrics.realBounces)
                     }
-                    .frame(minWidth: 96, alignment: .leading)
+                    .frame(minWidth: 92, alignment: .leading)
 
-                    // Правая сетка 2x1: Темп и Высота
                     HStack(spacing: 8) {
                         CompactStatPill(
                             title: "Темп",
@@ -466,7 +347,6 @@ struct CameraWorkoutView: View {
                     }
                 }
 
-                // Нижняя строка вторичных показателей
                 HStack(spacing: 0) {
                     miniFooterStat(label: "Броски", value: "\(session.metrics.shots)", color: .white)
                     Divider().frame(height: 16).background(Color.white.opacity(0.15))
@@ -479,15 +359,14 @@ struct CameraWorkoutView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .padding(14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(Color.white.opacity(0.16), lineWidth: 1)
             )
 
-            // Панель управления сессией
-            HStack(spacing: 16) {
-                GlassCircleButton(icon: "arrow.counterclockwise", size: 54) {
+            HStack(spacing: 14) {
+                GlassCircleButton(icon: "arrow.counterclockwise", size: 52) {
                     session.reset()
                 }
 
@@ -496,28 +375,31 @@ struct CameraWorkoutView: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: session.isPaused ? "play.fill" : "pause.fill")
-                            .font(.system(size: 18, weight: .bold))
                         Text(session.isPaused ? "Продолжить" : "Пауза")
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
                     }
+                    .font(.headline)
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 54)
-                    .background(session.isPaused ? AppTheme.orangeGradient : LinearGradient(colors: [Color.white.opacity(0.18), Color.white.opacity(0.12)], startPoint: .top, endPoint: .bottom))
+                    .frame(height: 52)
+                    .background(
+                        session.isPaused
+                            ? AppTheme.orangeGradient
+                            : LinearGradient(colors: [Color.white.opacity(0.18), Color.white.opacity(0.12)], startPoint: .top, endPoint: .bottom)
+                    )
                     .clipShape(Capsule())
                     .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
 
                 Button {
-                    session.stop()
-                    finishedRecord = session.buildRecord(mode: mode)
+                    session.setPaused(true)
+                    finishedRecord = session.buildRecord()
                 } label: {
                     Text("Финиш")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.headline)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
-                        .frame(height: 54)
+                        .frame(height: 52)
                         .background(AppTheme.red)
                         .clipShape(Capsule())
                 }
@@ -529,10 +411,10 @@ struct CameraWorkoutView: View {
     private func miniFooterStat(label: String, value: String, color: Color) -> some View {
         HStack(spacing: 5) {
             Text(label)
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.6))
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.65))
             Text(value)
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(.caption.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(color)
         }
@@ -550,27 +432,27 @@ struct WorkoutSummaryView: View {
     var body: some View {
         VStack(spacing: 22) {
             Capsule()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 40, height: 5)
+                .fill(Color.white.opacity(0.22))
+                .frame(width: 38, height: 5)
                 .padding(.top, 10)
 
             VStack(spacing: 8) {
                 ZStack {
                     Circle()
-                        .fill(AppTheme.orange.opacity(0.18))
-                        .frame(width: 72, height: 72)
+                        .fill(AppTheme.orange.opacity(0.16))
+                        .frame(width: 68, height: 68)
                     Image(systemName: "trophy.fill")
-                        .font(.system(size: 32))
+                        .font(.title)
                         .foregroundStyle(AppTheme.orangeGradient)
                 }
 
                 Text("Тренировка завершена")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .font(.title2.bold())
                     .foregroundStyle(.white)
 
-                Text("\(record.mode.rawValue) · \(record.formattedDuration)")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.white.opacity(0.6))
+                Text("Свободный дриблинг · \(record.formattedDuration)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -580,48 +462,48 @@ struct WorkoutSummaryView: View {
                 summaryBox(title: "Броски / Потери", value: "\(record.shots) / \(record.falseBounces)", color: .white)
             }
 
-            // Полоса контроля мяча
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("Контроль мяча")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white)
                     Spacer()
                     Text("\(record.controlPercent)%")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .font(.headline)
+                        .monospacedDigit()
                         .foregroundStyle(AppTheme.mint)
                 }
 
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.1))
+                        Capsule().fill(Color.white.opacity(0.12))
                         Capsule()
                             .fill(AppTheme.mint)
                             .frame(width: geo.size.width * CGFloat(record.controlPercent) / 100.0)
                     }
                 }
-                .frame(height: 10)
+                .frame(height: 8)
             }
-            .darkCard(cornerRadius: 18, padding: 16)
+            .darkCard(cornerRadius: 16, padding: 16)
 
             Spacer()
 
             VStack(spacing: 10) {
                 Button(action: onSave) {
                     Text("Сохранить в историю")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .font(.headline)
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
                         .background(AppTheme.orangeGradient)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
                 Button(action: onDiscard) {
                     Text("Удалить сессию")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.red)
                         .padding(.vertical, 10)
                 }
                 .buttonStyle(.plain)
@@ -635,10 +517,10 @@ struct WorkoutSummaryView: View {
     private func summaryBox(title: String, value: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.55))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.title3.bold())
                 .monospacedDigit()
                 .foregroundStyle(color)
         }
@@ -647,116 +529,233 @@ struct WorkoutSummaryView: View {
     }
 }
 
-// MARK: - Экран 4: История
+// MARK: - Экран 4: Удобная история тренировок
+
+enum HistorySortOption: String, CaseIterable, Identifiable {
+    case newest = "Сначала новые"
+    case mostBounces = "Больше ударов"
+    case fastestTempo = "Выше темп"
+
+    var id: String { rawValue }
+}
 
 struct HistoryView: View {
     @EnvironmentObject var store: AppStore
+    @State private var sortOption: HistorySortOption = .newest
+    @State private var selectedRecord: WorkoutRecord?
 
-    private let weekDemo: [(String, CGFloat)] = [
-        ("Пн", 0.45), ("Вт", 0.72), ("Ср", 0.30),
-        ("Чт", 0.90), ("Пт", 0.62), ("Сб", 1.0), ("Вс", 0.55)
-    ]
+    private var sortedHistory: [WorkoutRecord] {
+        switch sortOption {
+        case .newest:
+            return store.history.sorted { $0.date > $1.date }
+        case .mostBounces:
+            return store.history.sorted { $0.realBounces > $1.realBounces }
+        case .fastestTempo:
+            return store.history.sorted { $0.tempo > $1.tempo }
+        }
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("История")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+            Group {
+                if store.history.isEmpty {
+                    emptyStateView
+                } else {
+                    List {
+                        Section {
+                            HStack(spacing: 0) {
+                                overviewItem(title: "Тренировки", value: "\(store.history.count)", color: .white)
+                                Divider().frame(height: 28)
+                                overviewItem(title: "Всего ударов", value: "\(store.totalBounces)", color: AppTheme.orange)
+                                Divider().frame(height: 28)
+                                overviewItem(title: "Ср. контроль", value: "\(store.averageControl)%", color: AppTheme.mint)
+                            }
+                            .padding(.vertical, 6)
+                        }
 
-                    weeklyChartCard
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Все тренировки")
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-
-                        ForEach(store.history) { record in
-                            WorkoutRowCard(record: record)
+                        Section("Тренировки") {
+                            ForEach(sortedHistory) { record in
+                                Button {
+                                    selectedRecord = record
+                                } label: {
+                                    HistoryRow(record: record)
+                                }
+                                .buttonStyle(.plain)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        withAnimation {
+                                            store.delete(record)
+                                        }
+                                    } label: {
+                                        Label("Удалить", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("История")
+            .toolbar {
+                if !store.history.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Picker("Сортировка", selection: $sortOption) {
+                                ForEach(HistorySortOption.allCases) { option in
+                                    Text(option.rawValue).tag(option)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down.circle")
+                                .foregroundStyle(AppTheme.orange)
                         }
                     }
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 12)
-                .padding(.bottom, 32)
             }
-            .background(AppTheme.bgPrimary.ignoresSafeArea())
+            .sheet(item: $selectedRecord) { record in
+                WorkoutDetailSheet(record: record) {
+                    store.delete(record)
+                    selectedRecord = nil
+                }
+                .preferredColorScheme(.dark)
+            }
         }
     }
 
-    private var weeklyChartCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Активность за неделю")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("Всего ударов: \(store.history.reduce(0) { $0 + $1.realBounces })")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.55))
-                }
-                Spacer()
-                Image(systemName: "chart.bar.fill")
-                    .foregroundStyle(AppTheme.orange)
-            }
+    private var emptyStateView: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "basketball")
+                .font(.system(size: 46))
+                .foregroundStyle(.secondary)
 
-            HStack(alignment: .bottom, spacing: 12) {
-                ForEach(weekDemo, id: \.0) { day, ratio in
-                    VStack(spacing: 8) {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(ratio > 0.85 ? AppTheme.orangeGradient : LinearGradient(colors: [AppTheme.bgElevated, AppTheme.bgElevated], startPoint: .top, endPoint: .bottom))
-                            .frame(height: max(14, 96 * ratio))
-                        Text(day)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-            .frame(height: 120, alignment: .bottom)
+            Text("Пока нет тренировок")
+                .font(.title3.bold())
+                .foregroundStyle(.white)
+
+            Text("Завершите первую тренировку и нажмите «Сохранить», чтобы отслеживать свой прогресс.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 36)
         }
-        .darkCard(cornerRadius: 20, padding: 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppTheme.bgPrimary.ignoresSafeArea())
+    }
+
+    private func overviewItem(title: String, value: String, color: Color) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.title3.bold())
+                .monospacedDigit()
+                .foregroundStyle(color)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
-struct WorkoutRowCard: View {
+private struct HistoryRow: View {
     let record: WorkoutRecord
 
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(record.mode.accentColor.opacity(0.15))
-                    .frame(width: 48, height: 48)
-                Image(systemName: record.mode.icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(record.mode.accentColor)
-            }
-
+        HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.mode.rawValue)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                Text(record.formattedDate)
+                    .font(.headline)
                     .foregroundStyle(.white)
 
-                Text("\(record.formattedDuration) · Контроль \(record.controlPercent)%")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.55))
+                HStack(spacing: 8) {
+                    Label(record.formattedDuration, systemImage: "clock")
+                    Text("·")
+                    Text("Контроль \(record.controlPercent)%")
+                        .foregroundStyle(AppTheme.mint)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Spacer()
 
             VStack(alignment: .trailing, spacing: 3) {
-                Text("\(record.realBounces)")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                Text("\(record.realBounces) уд.")
+                    .font(.headline)
                     .monospacedDigit()
                     .foregroundStyle(.white)
+
                 Text(String(format: "%.2f уд/с", record.tempo))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.mint)
+                    .font(.caption.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(AppTheme.orangeLight)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct WorkoutDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let record: WorkoutRecord
+    let onDelete: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Основное") {
+                    LabeledContent("Дата", value: record.formattedDate)
+                    LabeledContent("Длительность", value: record.formattedDuration)
+                }
+
+                Section("Показатели") {
+                    LabeledContent("Удары") {
+                        Text("\(record.realBounces)")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(AppTheme.orange)
+                    }
+                    LabeledContent("Темп") {
+                        Text(String(format: "%.2f уд/с", record.tempo))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(AppTheme.mint)
+                    }
+                    LabeledContent("Средняя высота отскока") {
+                        Text(String(format: "%.1f см", record.avgHeightCm))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(AppTheme.blue)
+                    }
+                    LabeledContent("Контроль мяча") {
+                        Text("\(record.controlPercent)%")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(AppTheme.mint)
+                    }
+                    LabeledContent("Броски", value: "\(record.shots)")
+                    LabeledContent("Потери", value: "\(record.falseBounces)")
+                }
+
+                Section {
+                    Button(role: .destructive, action: onDelete) {
+                        HStack {
+                            Spacer()
+                            Text("Удалить тренировку")
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Детали сессии")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Готово") { dismiss() }
+                }
             }
         }
-        .darkCard(cornerRadius: 18, padding: 14)
     }
 }
 
@@ -767,83 +766,30 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("Настройки")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-
-                    VStack(alignment: .leading, spacing: 14) {
-                        sectionHeader("ОТОБРАЖЕНИЕ НА КАМЕРЕ")
-
-                        Toggle("Скелет игрока (Vision)", isOn: $store.showSkeleton)
-                            .tint(AppTheme.orange)
-                        Divider().background(AppTheme.border)
-                        Toggle("Рамка мяча (YOLO)", isOn: $store.showBallBox)
-                            .tint(AppTheme.orange)
-                        Divider().background(AppTheme.border)
-                        Toggle("Показывать FPS и статус AI", isOn: $store.showDebugHUD)
-                            .tint(AppTheme.orange)
-                    }
-                    .foregroundStyle(.white)
-                    .darkCard(cornerRadius: 20, padding: 16)
-
-                    VStack(alignment: .leading, spacing: 14) {
-                        sectionHeader("КАЛИБРОВКА МЯЧА")
-
-                        Text("Размер мяча для расчёта высоты отскока")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.white.opacity(0.75))
-
-                        Picker("Размер мяча", selection: $store.ballSize) {
-                            ForEach(BallSizeOption.allCases) { size in
-                                Text("\(size.title) (\(Int(size.diameterCm)) см)").tag(size)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                    }
-                    .darkCard(cornerRadius: 20, padding: 16)
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        sectionHeader("СКОРО В ОБНОВЛЕНИЯХ")
-
-                        futureFeatureRow(icon: "waveform", title: "Голосовые подсказки темпа", badge: "План")
-                        Divider().background(AppTheme.border)
-                        futureFeatureRow(icon: "film.stack", title: "Экспорт видео со скелетом", badge: "План")
-                    }
-                    .darkCard(cornerRadius: 20, padding: 16)
+            Form {
+                Section("Отображение на камере") {
+                    Toggle("Скелет игрока (Vision)", isOn: $store.showSkeleton)
+                        .tint(AppTheme.orange)
+                    Toggle("Рамка мяча (YOLO)", isOn: $store.showBallBox)
+                        .tint(AppTheme.orange)
+                    Toggle("FPS и статус модели", isOn: $store.showDebugHUD)
+                        .tint(AppTheme.orange)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 12)
-                .padding(.bottom, 32)
+
+                Section {
+                    Picker("Размер мяча", selection: $store.ballSize) {
+                        ForEach(BallSizeOption.allCases) { size in
+                            Text("\(size.title) (\(Int(size.diameterCm)) см)").tag(size)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Калибровка мяча")
+                } footer: {
+                    Text("Используется для пересчёта высоты отскока в сантиметры.")
+                }
             }
-            .background(AppTheme.bgPrimary.ignoresSafeArea())
+            .navigationTitle("Настройки")
         }
     }
-
-    private func sectionHeader(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(AppTheme.orangeLight)
-            .tracking(1.0)
-    }
-
-    private func futureFeatureRow(icon: String, title: String, badge: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(.white.opacity(0.5))
-                .frame(width: 24)
-            Text(title)
-                .font(.system(size: 14))
-                .foregroundStyle(.white.opacity(0.75))
-            Spacer()
-            Text(badge)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.white.opacity(0.08))
-                .clipShape(Capsule())
-        }
-    }
-}
+}       

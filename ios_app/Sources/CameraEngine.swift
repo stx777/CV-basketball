@@ -42,9 +42,14 @@ final class CameraSessionStore: ObservableObject {
         return Int((Double(metrics.realBounces) / Double(total) * 100.0).rounded())
     }
 
+    func setPaused(_ paused: Bool) {
+        guard isPaused != paused else { return }
+        isPaused = paused
+        controller?.setPaused(paused)
+    }
+
     func togglePause() {
-        isPaused.toggle()
-        controller?.setPaused(isPaused)
+        setPaused(!isPaused)
     }
 
     func reset() {
@@ -62,21 +67,16 @@ final class CameraSessionStore: ObservableObject {
         controller?.setOverlayOptions(showSkeleton: showSkeleton, showBallBox: showBallBox)
     }
 
-    func toggleBallBox() {
-        showBallBox.toggle()
-        controller?.setOverlayOptions(showSkeleton: showSkeleton, showBallBox: showBallBox)
-    }
-
     func stop() {
         timer?.invalidate()
         timer = nil
+        isPaused = true
         controller?.stopSession()
     }
 
-    func buildRecord(mode: WorkoutMode) -> WorkoutRecord {
+    func buildRecord() -> WorkoutRecord {
         WorkoutRecord(
             date: Date(),
-            mode: mode,
             durationSec: max(elapsedSeconds, 1),
             realBounces: metrics.realBounces,
             falseBounces: metrics.falseBounces,
@@ -144,14 +144,11 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
     private let ballBoxLayer = CAShapeLayer()
     private let ballTextLayer = CATextLayer()
 
-    // Флаги видимости оверлеев (main thread)
     private var showSkeletonOverlay: Bool = true
     private var showBallBoxOverlay: Bool = true
 
-    // Состояние камеры (sessionQueue)
     private var sessionPosition: AVCaptureDevice.Position = .back
 
-    // Состояние пайплайна (videoQueue)
     private var isProcessingPaused: Bool = false
     private var processingPosition: AVCaptureDevice.Position = .back
     private var processingOrientation: UIInterfaceOrientation = .portrait
@@ -168,17 +165,17 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
     private let metricsCalculator = MetricsCalculator()
 
     private let skeletonGroups: [SkeletonGroup] = [
-        SkeletonGroup(color: UIColor(red: 0.18, green: 0.90, blue: 0.62, alpha: 0.95), pairs: [
+        SkeletonGroup(color: UIColor.systemGreen.withAlphaComponent(0.95), pairs: [
             (.leftShoulder, .rightShoulder),
             (.leftShoulder, .leftHip),
             (.rightShoulder, .rightHip),
             (.leftHip, .rightHip)
         ]),
-        SkeletonGroup(color: UIColor(red: 1.0, green: 0.42, blue: 0.10, alpha: 0.95), pairs: [
+        SkeletonGroup(color: UIColor.systemOrange.withAlphaComponent(0.95), pairs: [
             (.leftShoulder, .leftElbow),
             (.leftElbow, .leftWrist)
         ]),
-        SkeletonGroup(color: UIColor(red: 0.22, green: 0.74, blue: 0.97, alpha: 0.95), pairs: [
+        SkeletonGroup(color: UIColor.systemBlue.withAlphaComponent(0.95), pairs: [
             (.rightShoulder, .rightElbow),
             (.rightElbow, .rightWrist)
         ]),
@@ -203,21 +200,24 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
         fatalError("init(coder:) has not been implemented")
     }
 
+    // Безопасный deinit без захвата [weak self] (устраняет краш при закрытии камеры)
     deinit {
-        stopSession()
+        let session = captureSession
+        let output = videoOutput
+        sessionQueue.async {
+            output.setSampleBufferDelegate(nil, queue: nil)
+            if session.isRunning {
+                session.stopRunning()
+            }
+        }
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(red: 0.043, green: 0.051, blue: 0.071, alpha: 1)
+        view.backgroundColor = .black
         setupPreviewAndDrawingLayers()
         setupModelAsync()
         setupCameraAsync()
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        stopSession()
     }
 
     override func viewDidLayoutSubviews() {
@@ -239,7 +239,7 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
         }
     }
 
-    // MARK: - Внешнее управление из SwiftUI
+    // MARK: - Управление из SwiftUI
 
     func setPaused(_ paused: Bool) {
         videoQueue.async { [weak self] in
@@ -251,12 +251,12 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
             }
         }
 
-        sessionQueue.async { [weak self] in
-            guard let self = self else { return }
+        let session = captureSession
+        sessionQueue.async {
             if paused {
-                if self.captureSession.isRunning { self.captureSession.stopRunning() }
+                if session.isRunning { session.stopRunning() }
             } else {
-                if !self.captureSession.isRunning { self.captureSession.startRunning() }
+                if !session.isRunning { session.startRunning() }
             }
         }
     }
@@ -328,10 +328,15 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
     }
 
     func stopSession() {
-        sessionQueue.async { [weak self] in
-            guard let self = self else { return }
-            if self.captureSession.isRunning {
-                self.captureSession.stopRunning()
+        videoQueue.async { [weak self] in
+            self?.isProcessingPaused = true
+        }
+        let session = captureSession
+        let output = videoOutput
+        sessionQueue.async {
+            output.setSampleBufferDelegate(nil, queue: nil)
+            if session.isRunning {
+                session.stopRunning()
             }
         }
     }
@@ -357,14 +362,14 @@ final class CameraViewController: UIViewController, AVCaptureVideoDataOutputSamp
         jointsLayer.fillColor = UIColor.white.cgColor
         drawingLayer.addSublayer(jointsLayer)
 
-        let orangeUI = UIColor(red: 1.0, green: 0.42, blue: 0.10, alpha: 1.0)
+        let orangeUI = UIColor(red: 1.0, green: 0.42, blue: 0.12, alpha: 1.0)
         ballBoxLayer.strokeColor = orangeUI.cgColor
         ballBoxLayer.lineWidth = 3.5
         ballBoxLayer.fillColor = orangeUI.withAlphaComponent(0.10).cgColor
         ballBoxLayer.isHidden = true
         drawingLayer.addSublayer(ballBoxLayer)
 
-        ballTextLayer.font = UIFont.systemFont(ofSize: 12, weight: .bold)
+        ballTextLayer.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
         ballTextLayer.fontSize = 12
         ballTextLayer.foregroundColor = UIColor.white.cgColor
         ballTextLayer.backgroundColor = orangeUI.cgColor
